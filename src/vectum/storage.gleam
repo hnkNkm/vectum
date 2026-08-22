@@ -391,7 +391,8 @@ pub fn retry_dead(
 ) -> Result(Nil, sqlight.Error) {
   sqlight.query(
     "update deliveries
-     set status = 'pending', next_attempt_at = ?, updated_at = ?
+     set status = 'pending', attempts = 0, next_attempt_at = ?,
+         last_error = null, updated_at = ?
      where id = ? and status = 'dead_letter'",
     on: conn,
     with: [sqlight.int(now_ms), sqlight.int(now_ms), sqlight.text(id)],

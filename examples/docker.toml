@@ -1,0 +1,25 @@
+# コンテナ既定設定。storage は書き込み可能な /data を使う。
+# host はコンテナ外から届くよう 0.0.0.0。
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[storage]
+path = "/data/router.db"
+
+[[sources]]
+name = "internal"
+path = "/events/internal"
+type_from_json = "type"
+
+[[destinations]]
+name = "echo"
+type = "http"
+url = "http://127.0.0.1:9090/events"
+
+[[routes]]
+name = "internal-all"
+source = "internal"
+event = "*"
+destinations = ["echo"]

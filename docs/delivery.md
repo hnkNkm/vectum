@@ -54,7 +54,7 @@ Backoff は exponential + equal jitter。上限は `max_backoff_ms`（既定 60s
 
 ## Dead Letter
 
-最大 retry 後も成功しない Delivery は `dead_letter` に移す。CLI で一覧、再試行、削除できる。自動再配送はしない。
+最大 retry 後も成功しない Delivery は `dead_letter` に移す。CLI で一覧、再試行、削除できる。自動再配送はしない。`vectum dead retry` は `attempts` を 0 に戻し、backoff サイクルを最初からやり直す。
 
 ## 状態
 

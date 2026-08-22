@@ -52,6 +52,28 @@ pub fn decide_success_retry_and_dead_test() {
     delivery.decide(p, 7, delivery.TimedOut, 0, 0.0)
 }
 
+pub fn decide_internal_error_uses_backoff_then_dead_test() {
+  let p = policy()
+  let assert delivery.RetryScheduled(1, 1000, "unknown destination ci") =
+    delivery.decide(
+      p,
+      0,
+      delivery.ConnectFailed("unknown destination ci"),
+      0,
+      0.0,
+    )
+  let assert delivery.RetryScheduled(3, 4000, "db locked") =
+    delivery.decide(p, 2, delivery.ConnectFailed("db locked"), 0, 0.0)
+  let assert delivery.DeadLettered(8, "unknown destination ci") =
+    delivery.decide(
+      p,
+      7,
+      delivery.ConnectFailed("unknown destination ci"),
+      0,
+      0.0,
+    )
+}
+
 pub fn default_timeout_used_when_destination_omits_it_test() {
   let dest =
     HttpDestination(

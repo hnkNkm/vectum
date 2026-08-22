@@ -17,7 +17,7 @@ RUN apk add --no-cache sqlite-libs openssl \
 
 WORKDIR /app
 COPY --from=build /app/build/erlang-shipment /app
-COPY examples/minimal.toml /config/router.toml
+COPY examples/docker.toml /config/router.toml
 
 ENV VECTUM_CONFIG=/config/router.toml
 USER vectum

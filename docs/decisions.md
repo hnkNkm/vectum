@@ -23,3 +23,12 @@
 | Dedup | 同一 Event × Destination は Delivery 1 件 |
 
 設定キーはドラフト例に合わせ、`type_from_header` / `type_from_json` / `destinations = [...]` を採用した。
+
+追加の固定事項:
+
+| 項目 | 決定 |
+| --- | --- |
+| Envelope の時刻キー | 配線 JSON は `time`。Gleam のフィールド名は `timestamp` |
+| Dispatcher 内部エラー | Event 取得失敗や未知 Destination も HTTP 接続失敗と同じ retry ポリシー（backoff / `max_attempts` / dead letter） |
+| `dead retry` | `attempts` を 0 に戻し、full backoff をやり直す |
+| Docker の SQLite | `/data/router.db`。実行ユーザー `vectum` が書ける場所に限定する |

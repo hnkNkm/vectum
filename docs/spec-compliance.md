@@ -35,6 +35,7 @@
 - 未知 Source は 404。HMAC 失敗は 401。Payload 超過は 413。非 JSON は 415
 - フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path、AND のみ
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
+- Event 取得失敗や未知 Destination などの内部エラーも同じ backoff / `max_attempts` を適用する
 - Destination へ `X-Event-Id` と `Idempotency-Key` を付与
 - `GET /health`、`GET /ready`、構造化 JSON ログ
 - オフライン起動（Destination が Internet 上ならその通信のみ必要）
@@ -51,7 +52,7 @@
 | メトリクス名 | 候補 `events_accepted_total`、`delivery_latency_seconds` ヒストグラム | `events_received_total` とミリ秒の sum/count |
 | CLI 名 | プレースホルダ `router` | 製品名 `vectum`（意図した差分） |
 | モジュール配置 | 層分けの例 | `src/vectum/*.gleam` に平坦化（仕様も過剰な層は避けるとしている） |
-| Docker マウント | 例 `-v ./router.toml:/app/router.toml` | `/config/router.toml` + `VECTUM_CONFIG` |
+| Docker マウント | 例 `-v ./router.toml:/app/router.toml` | `/config/router.toml` + `VECTUM_CONFIG`。DB は `/data/router.db` |
 | `dead retry` / `delete` | ID 指定で再配送・削除 | 該当行が無くても成功終了する |
 | `[log]` 設定 | レベル / 形式 | 常に JSON 1 行。設定キーは未読込 |
 | RouteManager プロセス | OTP 上の独立 Process | プロセス内の純関数 |
