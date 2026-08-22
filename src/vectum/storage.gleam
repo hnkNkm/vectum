@@ -72,6 +72,11 @@ pub type Message {
     error: String,
     now_ms: Int,
   )
+  ReapStale(
+    reply: Subject(Result(Int, sqlight.Error)),
+    cutoff_ms: Int,
+    now_ms: Int,
+  )
   ListDead(reply: Subject(Result(List(Delivery), sqlight.Error)))
   RetryDead(reply: Subject(Result(Nil, sqlight.Error)), id: String, now_ms: Int)
   DeleteDead(reply: Subject(Result(Nil, sqlight.Error)), id: String)
@@ -369,6 +374,33 @@ fn update_delivery(
   |> result.replace(Nil)
 }
 
+/// updated_at が cutoff_ms より前の delivering を pending に戻し、
+/// 戻した件数を返す。
+pub fn reap_stale_delivering(
+  conn: sqlight.Connection,
+  cutoff_ms: Int,
+  now_ms: Int,
+) -> Result(Int, sqlight.Error) {
+  use _ <- result.try(sqlight.query(
+    "update deliveries
+     set status = 'pending', updated_at = ?
+     where status = 'delivering' and updated_at < ?",
+    on: conn,
+    with: [sqlight.int(now_ms), sqlight.int(cutoff_ms)],
+    expecting: decode.success(Nil),
+  ))
+  use rows <- result.try(
+    sqlight.query("select changes()", on: conn, with: [], expecting: {
+      use n <- decode.field(0, decode.int)
+      decode.success(n)
+    }),
+  )
+  case rows {
+    [n] -> Ok(n)
+    _ -> Ok(0)
+  }
+}
+
 pub fn list_dead(
   conn: sqlight.Connection,
 ) -> Result(List(Delivery), sqlight.Error) {
@@ -533,6 +565,16 @@ pub fn call_mark_dead(
   })
 }
 
+pub fn call_reap_stale(
+  store: Store,
+  cutoff_ms: Int,
+  now_ms: Int,
+) -> Result(Int, sqlight.Error) {
+  process.call(store.subject, 5000, fn(reply) {
+    ReapStale(reply:, cutoff_ms:, now_ms:)
+  })
+}
+
 pub fn call_list_dead(store: Store) -> Result(List(Delivery), sqlight.Error) {
   process.call(store.subject, 5000, ListDead)
 }
@@ -584,6 +626,8 @@ fn handle(
       )
     MarkDead(reply:, id:, attempts:, error:, now_ms:) ->
       process.send(reply, mark_dead(conn, id, attempts, error, now_ms))
+    ReapStale(reply:, cutoff_ms:, now_ms:) ->
+      process.send(reply, reap_stale_delivering(conn, cutoff_ms, now_ms))
     ListDead(reply:) -> process.send(reply, list_dead(conn))
     RetryDead(reply:, id:, now_ms:) ->
       process.send(reply, retry_dead(conn, id, now_ms))

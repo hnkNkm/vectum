@@ -34,3 +34,4 @@
 | Docker の SQLite | `/data/router.db`。実行ユーザー `vectum` が書ける場所に限定する |
 | Graceful shutdown | SIGTERM / SIGINT で受付停止 → 実行中ワーカーの完了待ち(既定 10 秒、`VECTUM_SHUTDOWN_GRACE_MS`)→ 終了。listen socket は close せず 503 応答で drain |
 | Supervisor 木 | static_supervisor(one_for_one)配下に Storage / Metrics / Dispatcher を permanent 配置。参照は persistent_term の registry で共有し、再起動後の Subject に自動追従 |
+| 滞留 reaper | delivering を「タイムアウト ×2(最低 10 秒)」より古ければ滞留と見なし、10 秒間隔でチェックして pending に戻す。二重配送は at-least-once の範囲内 |

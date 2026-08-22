@@ -31,6 +31,7 @@
 | `deliveries_success_total` | counter | 配送成功数 |
 | `deliveries_retry_total` | counter | retry した数 |
 | `deliveries_dead_total` | counter | dead letter 移行数 |
+| `deliveries_reaped_total` | counter | 滞留 delivering の再開数(reaper) |
 | `delivery_latency_milliseconds_sum` | counter | 配送レイテンシ合計（ミリ秒） |
 | `delivery_latency_milliseconds_count` | counter | レイテンシ件数 |
 | `pending_deliveries` | gauge | 未完了 Delivery |

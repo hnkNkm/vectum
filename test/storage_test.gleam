@@ -94,3 +94,23 @@ pub fn success_clears_pending_test() {
   let assert Ok(0) = storage.count_pending(conn)
   let assert Ok([]) = storage.list_dead(conn)
 }
+
+pub fn reap_stale_delivering_moves_only_old_rows_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-reap")
+  let assert Ok([d1, _d2]) =
+    storage.accept(conn, ev, ["ci", "audit"], 1000, ["rp-1", "rp-2"])
+  // d1 を updated_at=1000 で delivering に
+  let assert Ok([c1]) = storage.claim_due(conn, 1000, 1)
+  assert c1.id == d1.id
+  // d2 を updated_at=2000 で delivering に
+  let assert Ok([_c2]) = storage.claim_due(conn, 2000, 10)
+
+  // cutoff=1500: 古い方(updated_at=1000)だけを pending に戻す
+  let assert Ok(1) = storage.reap_stale_delivering(conn, 1500, 3000)
+  let assert Ok([requeued]) = storage.claim_due(conn, 3000, 10)
+  assert requeued.id == d1.id
+
+  // 新しい時刻の delivering は残る
+  let assert Ok(0) = storage.reap_stale_delivering(conn, 2000, 4000)
+}
