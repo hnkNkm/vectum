@@ -9,6 +9,7 @@ import vectum/config.{type Config}
 import vectum/delivery.{type Outgoing, type SendResult}
 import vectum/log
 import vectum/metrics.{type Metrics}
+import vectum/shutdown
 import vectum/storage.{type Delivery, type Store}
 
 pub fn start(
@@ -37,15 +38,20 @@ pub fn tick(
   metrics: Metrics,
   send: fn(Outgoing) -> SendResult,
 ) -> Result(Int, String) {
-  storage.call_claim_due(store, clock.now_ms(), config.concurrency)
-  |> result.map_error(string.inspect)
-  |> result.map(fn(due) {
-    list.each(due, fn(item) {
-      process.spawn(fn() { process_one(config, store, metrics, send, item) })
-      Nil
-    })
-    list.length(due)
-  })
+  case shutdown.is_shutting_down() {
+    True -> Ok(0)
+    False -> {
+      storage.call_claim_due(store, clock.now_ms(), config.concurrency)
+      |> result.map_error(string.inspect)
+      |> result.map(fn(due) {
+        list.each(due, fn(item) {
+          process.spawn(fn() { process_one(config, store, metrics, send, item) })
+          Nil
+        })
+        list.length(due)
+      })
+    }
+  }
 }
 
 pub fn process_one(
@@ -55,6 +61,21 @@ pub fn process_one(
   send: fn(Outgoing) -> SendResult,
   item: Delivery,
 ) -> Nil {
+  shutdown.worker_started()
+  process_one_inner(config, store, metrics, send, item)
+  shutdown.worker_finished()
+  Nil
+}
+
+/// 注意: panic 時は worker_finished が呼ばれずカウンタが漏れるが、
+/// shutdown 側は猶予時間で打ち切るため終了は止まらない。
+fn process_one_inner(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  send: fn(Outgoing) -> SendResult,
+  item: Delivery,
+) {
   metrics.record_attempt(metrics)
   let now = clock.now_ms()
   case

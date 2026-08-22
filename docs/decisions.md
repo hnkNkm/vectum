@@ -32,3 +32,4 @@
 | Dispatcher 内部エラー | Event 取得失敗や未知 Destination も HTTP 接続失敗と同じ retry ポリシー（backoff / `max_attempts` / dead letter） |
 | `dead retry` | `attempts` を 0 に戻し、full backoff をやり直す |
 | Docker の SQLite | `/data/router.db`。実行ユーザー `vectum` が書ける場所に限定する |
+| Graceful shutdown | SIGTERM / SIGINT で受付停止 → 実行中ワーカーの完了待ち(既定 10 秒、`VECTUM_SHUTDOWN_GRACE_MS`)→ 終了。listen socket は close せず 503 応答で drain |

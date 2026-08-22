@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- SIGTERM / SIGINT での graceful shutdown を追加。受付 503 化、dispatcher の claim 停止、実行中ワーカーの完了待ち(既定 10 秒、`VECTUM_SHUTDOWN_GRACE_MS` で変更)
 - Envelope の JSON キーを仕様どおり `time` に揃えた
 - Dispatcher 内部エラーでも `[delivery]` の backoff と `max_attempts` を使う
 - `vectum dead retry` で `attempts` を 0 に戻す

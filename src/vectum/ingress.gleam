@@ -15,6 +15,7 @@ import vectum/config.{type Config}
 import vectum/id
 import vectum/log
 import vectum/metrics.{type Metrics}
+import vectum/shutdown
 import vectum/storage.{type Store}
 
 pub fn service(
@@ -42,6 +43,19 @@ pub fn handle_connection(
 }
 
 fn post_event(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  source: String,
+  req: Request(Connection),
+) -> Response(ResponseData) {
+  case shutdown.is_shutting_down() {
+    True -> json_error(503, "shutting down")
+    False -> read_and_persist(config, store, metrics, source, req)
+  }
+}
+
+fn read_and_persist(
   config: Config,
   store: Store,
   metrics: Metrics,
@@ -90,54 +104,58 @@ pub fn persist_event(
   headers: List(#(String, String)),
   body: String,
 ) -> Response(ResponseData) {
-  case
-    accept.normalize(
-      config,
-      source,
-      content_type,
-      headers,
-      body,
-      clock.now_rfc3339(),
-      id.event_id(),
-    )
-  {
-    Error(accept.Reject(status, reason)) -> {
-      metrics.record_rejected(metrics)
-      log.error([
-        #("msg", "event_rejected"),
-        #("source", source),
-        #("reason", reason),
-        #("status", int.to_string(status)),
-      ])
-      json_error(status, reason)
-    }
-    Ok(accept.Accepted(event:, destinations:)) -> {
-      let ids = list_ids(destinations)
+  case shutdown.is_shutting_down() {
+    True -> json_error(503, "shutting down")
+    False ->
       case
-        storage.call_accept(store, event, destinations, clock.now_ms(), ids)
+        accept.normalize(
+          config,
+          source,
+          content_type,
+          headers,
+          body,
+          clock.now_rfc3339(),
+          id.event_id(),
+        )
       {
-        Error(error) -> {
+        Error(accept.Reject(status, reason)) -> {
           metrics.record_rejected(metrics)
           log.error([
-            #("msg", "persist_failed"),
+            #("msg", "event_rejected"),
             #("source", source),
-            #("error", string.inspect(error)),
+            #("reason", reason),
+            #("status", int.to_string(status)),
           ])
-          json_error(500, "persist failed")
+          json_error(status, reason)
         }
-        Ok(deliveries) -> {
-          metrics.record_received(metrics)
-          log.info([
-            #("msg", "event_accepted"),
-            #("event_id", event.id),
-            #("source", event.source),
-            #("event_type", event.event_type),
-            #("deliveries", int.to_string(list.length(deliveries))),
-          ])
-          accepted(event.id, list.length(deliveries))
+        Ok(accept.Accepted(event:, destinations:)) -> {
+          let ids = list_ids(destinations)
+          case
+            storage.call_accept(store, event, destinations, clock.now_ms(), ids)
+          {
+            Error(error) -> {
+              metrics.record_rejected(metrics)
+              log.error([
+                #("msg", "persist_failed"),
+                #("source", source),
+                #("error", string.inspect(error)),
+              ])
+              json_error(500, "persist failed")
+            }
+            Ok(deliveries) -> {
+              metrics.record_received(metrics)
+              log.info([
+                #("msg", "event_accepted"),
+                #("event_id", event.id),
+                #("source", event.source),
+                #("event_type", event.event_type),
+                #("deliveries", int.to_string(list.length(deliveries))),
+              ])
+              accepted(event.id, list.length(deliveries))
+            }
+          }
         }
       }
-    }
   }
 }
 
@@ -146,9 +164,13 @@ fn list_ids(destinations: List(String)) -> List(String) {
 }
 
 fn ready(store: Store) -> Response(ResponseData) {
-  case storage.call_ping(store) {
-    Ok(_) -> text(200, "ready\n")
-    Error(_) -> text(503, "not ready\n")
+  let db_ok = case shutdown.is_shutting_down() {
+    True -> False
+    False -> storage.call_ping(store) |> result.is_ok
+  }
+  case db_ok {
+    True -> text(200, "ready\n")
+    False -> text(503, "not ready\n")
   }
 }
 
