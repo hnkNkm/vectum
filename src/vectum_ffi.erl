@@ -6,7 +6,11 @@
     worker_started/0,
     worker_finished/0,
     active_worker_count/0,
-    install_shutdown_handler/1
+    install_shutdown_handler/1,
+    registry_put_store/1,
+    registry_get_store/0,
+    registry_put_metrics/1,
+    registry_get_metrics/0
 ]).
 
 get_env(Name) when is_binary(Name) ->
@@ -67,3 +71,27 @@ install_shutdown_handler(Fun) ->
     _ = os:set_signal(sigterm, handle),
     _ = catch os:set_signal(sigint, handle),
     nil.
+
+%% ------------------------------------------------------------------
+%% Registry (vectum/registry.gleam)
+%% ------------------------------------------------------------------
+
+registry_put_store(Value) ->
+    _ = persistent_term:put(vectum_registry_store, Value),
+    nil.
+
+registry_get_store() ->
+    case persistent_term:get(vectum_registry_store, undefined) of
+        undefined -> {error, nil};
+        Value -> {ok, Value}
+    end.
+
+registry_put_metrics(Value) ->
+    _ = persistent_term:put(vectum_registry_metrics, Value),
+    nil.
+
+registry_get_metrics() ->
+    case persistent_term:get(vectum_registry_metrics, undefined) of
+        undefined -> {error, nil};
+        Value -> {ok, Value}
+    end.

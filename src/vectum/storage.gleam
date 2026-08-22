@@ -439,6 +439,16 @@ pub fn ping(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
 }
 
 pub fn start(path: String) -> Result(Store, String) {
+  case start_supervised(path) {
+    Ok(started) -> Ok(started.data)
+    Error(error) -> Error(string.inspect(error))
+  }
+}
+
+/// Supervisor 配下用。Started をそのまま返す。
+pub fn start_supervised(
+  path: String,
+) -> Result(actor.Started(Store), actor.StartError) {
   actor.new_with_initialiser(2000, fn(subject) {
     case connect(path) {
       Error(error) -> Error(string.inspect(error))
@@ -456,8 +466,6 @@ pub fn start(path: String) -> Result(Store, String) {
   })
   |> actor.on_message(handle)
   |> actor.start
-  |> result.map(fn(started) { started.data })
-  |> result.map_error(string.inspect)
 }
 
 pub fn call_accept(

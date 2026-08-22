@@ -1,7 +1,8 @@
 import gleam/crypto
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/otp/actor
 import gleam/result
 import gleam/string
 import vectum/clock
@@ -9,27 +10,52 @@ import vectum/config.{type Config}
 import vectum/delivery.{type Outgoing, type SendResult}
 import vectum/log
 import vectum/metrics.{type Metrics}
+import vectum/registry
 import vectum/shutdown
 import vectum/storage.{type Delivery, type Store}
 
-pub fn start(
-  config: Config,
-  store: Store,
-  metrics: Metrics,
-  send: fn(Outgoing) -> SendResult,
-) -> process.Pid {
-  process.spawn(fn() { loop(config, store, metrics, send) })
+/// claim 間隔(ミリ秒)。
+const poll_interval_ms = 200
+
+type State {
+  State(config: Config, send: fn(Outgoing) -> SendResult, self: Subject(Msg))
 }
 
-fn loop(
+pub type Msg {
+  Tick
+}
+
+/// Supervisor 配下で dispatcher loop を起動する。
+/// Storage / Metrics の参照は registry から毎 tick 読むため、
+/// 先のプロセスが再起動しても自動的に新しい Subject を使う。
+pub fn start_supervised(
   config: Config,
-  store: Store,
-  metrics: Metrics,
   send: fn(Outgoing) -> SendResult,
-) -> Nil {
-  let _ = tick(config, store, metrics, send)
-  process.sleep(200)
-  loop(config, store, metrics, send)
+) -> Result(actor.Started(Nil), actor.StartError) {
+  actor.new_with_initialiser(2000, fn(subject) {
+    process.send_after(subject, poll_interval_ms, Tick)
+    actor.initialised(State(config:, send:, self: subject))
+    |> actor.returning(Nil)
+    |> Ok
+  })
+  |> actor.on_message(handle)
+  |> actor.start
+}
+
+fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
+  case message {
+    Tick -> {
+      case registry.get_store(), registry.get_metrics() {
+        Ok(store), Ok(metrics) -> {
+          let _ = tick(state.config, store, metrics, state.send)
+          Nil
+        }
+        _, _ -> Nil
+      }
+      let _ = process.send_after(state.self, poll_interval_ms, Tick)
+      actor.continue(state)
+    }
+  }
 }
 
 pub fn tick(
