@@ -39,8 +39,16 @@ gleam test
 
 ## クイックスタート
 
+秘密情報なしで設定検証だけする場合:
+
 ```sh
-cp examples/router.toml router.toml
+gleam run -- validate --config examples/minimal.toml
+```
+
+HMAC 付きの例は `examples/router.toml` です (`.env.example` を参照)。
+
+```sh
+cp examples/minimal.toml router.toml
 gleam run -- run --config router.toml
 ```
 
