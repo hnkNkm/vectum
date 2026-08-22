@@ -67,6 +67,7 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   let assert Ok([]) = storage.list_dead(conn)
   let assert Ok([pending]) = storage.claim_due(conn, 7000, 1)
   assert pending.status == storage.Delivering
+  assert pending.attempts == 0
 
   let assert Ok(Nil) = storage.mark_dead(conn, pending.id, 8, "boom", 8000)
   let assert Ok(Nil) = storage.delete_dead(conn, pending.id)

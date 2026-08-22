@@ -20,7 +20,7 @@ Transport 非依存の共通 Event Envelope。HTTP Webhook も MQTT Message も�
 | `id` | はい | 内部採番。外部の Event ID は使わない |
 | `source` | はい | Event Source 名 |
 | `type` | はい | Event Type |
-| `time` | はい | 受信時刻（UTC） |
+| `time` | はい | 受信時刻（UTC）。内部 Record 名は `timestamp` |
 | `data` | はい | 正規化後の Payload |
 | `metadata` | いいえ | HTTP headers、MQTT topic など |
 

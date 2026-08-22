@@ -90,16 +90,16 @@ pub fn process_one(
         #("delivery_id", item.id),
         #("error", reason),
       ])
-      let _ =
-        storage.call_mark_retry(
-          store,
-          item.id,
-          item.attempts + 1,
-          now + 1000,
-          reason,
+      let update =
+        delivery.decide(
+          config.delivery,
+          item.attempts,
+          delivery.ConnectFailed(reason),
           now,
+          random_unit(),
         )
-      metrics.record_retry(metrics)
+      let _ =
+        persist_update(store, metrics, item, item.event_id, update, now, 0)
       Nil
     }
   }

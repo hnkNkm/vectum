@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Envelope の JSON キーを仕様どおり `time` に揃えた
+- Dispatcher 内部エラーでも `[delivery]` の backoff と `max_attempts` を使う
+- `vectum dead retry` で `attempts` を 0 に戻す
+- Docker 既定設定の SQLite を `/data/router.db` にした
+
 ## 0.1.0 - 2026-08-23
 
 最初のリリース。Gleam / BEAM 上の self-hosted Event Router として、仕様 v0.1 の必須機能を提供します。

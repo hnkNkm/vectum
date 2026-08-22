@@ -49,7 +49,8 @@ pub fn envelope_contains_required_fields_test() {
   assert string.contains(body, "\"id\":\"id-1\"")
   assert string.contains(body, "\"source\":\"github\"")
   assert string.contains(body, "\"type\":\"push\"")
-  assert string.contains(body, "\"timestamp\"")
+  assert string.contains(body, "\"time\"")
+  assert !string.contains(body, "\"timestamp\"")
   assert string.contains(body, "\"data\"")
   assert string.contains(body, "\"metadata\"")
 }

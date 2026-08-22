@@ -102,7 +102,7 @@ pub fn envelope_json(event: Event) -> json.Json {
     #("id", json.string(event.id)),
     #("source", json.string(event.source)),
     #("type", json.string(event.event_type)),
-    #("timestamp", json.string(event.timestamp)),
+    #("time", json.string(event.timestamp)),
     #("data", to_json(event.data)),
     #(
       "metadata",

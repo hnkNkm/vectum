@@ -159,8 +159,18 @@ gleam build
 
 ## コンテナ
 
+イメージ既定の設定は `examples/docker.toml` で、SQLite は `/data/router.db` に書きます。独自設定を載せる場合も `storage.path` を `/data` 配下にしてください。
+
 ```sh
 docker build -t vectum:0.1.0 .
+docker run --rm -p 8080:8080 \
+  -v ./data:/data \
+  vectum:0.1.0
+```
+
+設定を上書きする場合:
+
+```sh
 docker run --rm -p 8080:8080 \
   -e VECTUM_CONFIG=/config/router.toml \
   -v ./router.toml:/config/router.toml:ro \

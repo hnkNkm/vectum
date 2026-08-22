@@ -12,14 +12,23 @@ Internet なしで起動、設定、配送、再配送、監視ができる。De
 
 単一バイナリ、または Docker。
 
+イメージ既定は `examples/docker.toml` を `/config/router.toml` に焼き込む。`storage.path` は `/data/router.db`、listen は `0.0.0.0:8080`。`/app` は root 所有のため、相対パス `./router.db` だと `vectum` ユーザーで書けない。
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v ./data:/data \
+  vectum
+```
+
+独自設定を載せる場合は `storage.path` を `/data` 配下にし、データ用ボリュームを同じパスにマウントする。
+
 ```bash
 docker run --rm -p 8080:8080 \
   -v ./router.toml:/config/router.toml:ro \
   -e VECTUM_CONFIG=/config/router.toml \
+  -v ./data:/data \
   vectum
 ```
-
-仕様ドラフトの例は `-v ./router.toml:/app/router.toml` だった。イメージは `/config/router.toml` と `VECTUM_CONFIG` を使う。
 
 Ingress の TLS は reverse proxy に委譲する。
 

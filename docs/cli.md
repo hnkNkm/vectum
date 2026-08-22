@@ -17,7 +17,7 @@ vectum dead delete <delivery-id> --config router.toml
 | `run` | HTTP Ingress と dispatcher を起動する |
 | `validate` | 設定を検証して終了する |
 | `dead list` | dead letter を一覧する |
-| `dead retry` | 指定 Delivery を `pending` に戻す |
+| `dead retry` | 指定 Delivery を `pending` に戻し、`attempts` を 0 にする |
 | `dead delete` | 指定 Delivery を削除する |
 
 `--config` を省略すると `VECTUM_CONFIG`、それが無ければ `router.toml`。
@@ -27,5 +27,7 @@ v0.1 対象外（将来候補）:
 - `status`
 - `events list`
 - `deliveries list`
+
+`dead retry` は `attempts` を 0 に戻す。再配送は `[delivery].max_attempts` 分の backoff を最初からやり直す。
 
 `dead retry` / `dead delete` は、該当 ID の `dead_letter` が無くても成功終了する。存在確認のエラー化は未実装。
