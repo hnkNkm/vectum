@@ -1,0 +1,24 @@
+# HMAC や外部秘密を使わない最小構成。validate / ローカル動作確認用。
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[storage]
+path = "./router.db"
+
+[[sources]]
+name = "internal"
+path = "/events/internal"
+type_from_json = "type"
+
+[[destinations]]
+name = "echo"
+type = "http"
+url = "http://127.0.0.1:9090/events"
+
+[[routes]]
+name = "internal-all"
+source = "internal"
+event = "*"
+destinations = ["echo"]

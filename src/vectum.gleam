@@ -1,5 +1,6 @@
-import gleam/io
+import argv
+import vectum/app
 
 pub fn main() -> Nil {
-  io.println("Hello from vectum!")
+  app.run_command(argv.load().arguments)
 }

@@ -7,3 +7,6 @@ pub fn set(name: String, value: String) -> Nil
 
 @external(erlang, "vectum_ffi", "unset_env")
 pub fn unset(name: String) -> Nil
+
+@external(erlang, "vectum_ffi", "halt")
+pub fn halt(code: Int) -> Nil
