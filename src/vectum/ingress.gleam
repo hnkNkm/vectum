@@ -15,6 +15,7 @@ import vectum/config.{type Config}
 import vectum/id
 import vectum/log
 import vectum/metrics.{type Metrics}
+import vectum/registry
 import vectum/shutdown
 import vectum/storage.{type Store}
 
@@ -24,6 +25,22 @@ pub fn service(
   metrics: Metrics,
 ) -> fn(Request(Connection)) -> Response(ResponseData) {
   fn(req) { handle_connection(config, store, metrics, req) }
+}
+
+/// Supervisor 配下で使うサービス。registry から都度参照を読むため、
+/// actor の再起動で Subject が変わっても追従する。
+pub fn service_from_registry(
+  config: Config,
+) -> fn(Request(Connection)) -> Response(ResponseData) {
+  fn(req) {
+    case registry.get_store(), registry.get_metrics() {
+      Ok(store), Ok(metrics) -> handle_connection(config, store, metrics, req)
+      _, _ ->
+        response.new(503)
+        |> response.set_header("content-type", "text/plain")
+        |> response.set_body(mist.Bytes(bytes_tree.from_string("starting\n")))
+    }
+  }
 }
 
 pub fn handle_connection(

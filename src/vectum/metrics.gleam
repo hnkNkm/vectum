@@ -1,7 +1,6 @@
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/otp/actor
-import gleam/result
 import gleam/string
 
 pub type Metrics {
@@ -32,11 +31,22 @@ pub type Message {
 }
 
 pub fn start() -> Result(Metrics, String) {
-  actor.new(empty())
-  |> actor.on_message(handle)
-  |> actor.start
-  |> result.map(fn(started) { Metrics(started.data) })
-  |> result.map_error(string.inspect)
+  case start_supervised() {
+    Ok(started) -> Ok(started.data)
+    Error(e) -> Error(string.inspect(e))
+  }
+}
+
+/// Supervisor 配下用。Started をそのまま返す。
+pub fn start_supervised() -> Result(actor.Started(Metrics), actor.StartError) {
+  case
+    actor.new(empty())
+    |> actor.on_message(handle)
+    |> actor.start
+  {
+    Ok(started) -> Ok(actor.Started(..started, data: Metrics(started.data)))
+    Error(e) -> Error(e)
+  }
 }
 
 pub fn empty() -> Snapshot {

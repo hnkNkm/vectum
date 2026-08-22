@@ -8,13 +8,12 @@ import vectum/cli
 import vectum/clock
 import vectum/config.{ConfigError}
 import vectum/delivery
-import vectum/dispatcher
 import vectum/env
 import vectum/ingress
 import vectum/log
-import vectum/metrics
 import vectum/shutdown
 import vectum/storage
+import vectum/supervisor
 
 pub fn run_command(arguments: List(String)) -> Nil {
   case cli.parse(arguments) {
@@ -57,11 +56,12 @@ pub fn validate(path: String) -> Nil {
 pub fn run_server(path: String) -> Nil {
   let parsed = require_config(path)
   shutdown.init()
-  let store = require_store(parsed.storage.path)
-  let metrics = require_metrics()
-  let _ = dispatcher.start(parsed, store, metrics, delivery.send_http)
+  case supervisor.start_tree(parsed, delivery.send_http) {
+    Ok(_) -> Nil
+    Error(error) -> fail("failed to start services: " <> error)
+  }
   let assert Ok(_) =
-    ingress.service(parsed, store, metrics)
+    ingress.service_from_registry(parsed)
     |> mist.new
     |> mist.bind(parsed.server.host)
     |> mist.port(parsed.server.port)
@@ -121,13 +121,6 @@ fn require_store(path: String) -> storage.Store {
   case storage.start(path) {
     Ok(store) -> store
     Error(error) -> fail("failed to open storage " <> path <> ": " <> error)
-  }
-}
-
-fn require_metrics() -> metrics.Metrics {
-  case metrics.start() {
-    Ok(m) -> m
-    Error(error) -> fail("failed to start metrics: " <> error)
   }
 }
 

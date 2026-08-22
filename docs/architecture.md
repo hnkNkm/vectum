@@ -41,20 +41,23 @@ v0.1 の Transport は HTTP Ingress と HTTP Destination のみ。
 
 ## v0.1 のプロセス構成
 
-仕様は RootSupervisor 配下の粒度を性能試験後に決めてよいとしている。v0.1 の実装は次の通り。
+仕様は RootSupervisor 配下の粒度を性能試験後に決めてよいとしている。v0.1 実装は `gleam/otp` の static_supervisor で one_for_one 構成とする。
 
 ```text
 vectum (main)
-├── Storage actor     … SQLite 接続を直列化
-├── Metrics actor     … カウンタ
-├── Dispatcher loop   … due Delivery を claim して worker を spawn
-│    └── Delivery worker × N
-└── mist HTTP server  … Ingress / health / metrics
+└── RootSupervisor (one_for_one, permanent)
+     ├── Storage actor    … SQLite 接続を直列化。起動時に registry へ再登録
+     ├── Metrics actor    … カウンタ。再起動でカウンタはリセット
+     └── Dispatcher actor … 定期 tick で due Delivery を claim し worker を spawn
+          └── Delivery worker × N
+mist HTTP server … Ingress / health / metrics(独立)
 ```
+
+Storage / Metrics / Dispatcher の参照は registry(persistent_term)経由で共有し、利用側は毎回読み出す。これにより子プロセスが再起動して Subject が変わっても、Ingress / Dispatcher は自動的に新しい参照を使う。
 
 Destination 単位の Supervisor ではなく、共有 worker pool + SQLite claim を採用している。詳細は [decisions.md](./decisions.md)。
 
-ある worker のクラッシュは他 Destination の claim を止めない。Storage actor が落ちた場合は配送も受理も止まる（単一ノード前提）。
+ある worker のクラッシュは他 Destination の claim を止めない。Storage / Metrics / Dispatcher が落ちた場合は Supervisor が再起動する(既定の許容は 5 秒あたり 10 回)。超過すると Supervisor 自身が終了するためプロセス全体が停止する(単一ノード前提)。
 
 起動時は `delivering` 状態の Delivery を `pending` に戻し、未完了配送を再開する。
 
@@ -73,4 +76,5 @@ Destination 単位の Supervisor ではなく、共有 worker pool + SQLite clai
 | `delivery` / `dispatcher` | HTTP 配送と claim loop |
 | `ingress` | HTTP API |
 | `metrics` / `log` | 観測 |
+| `registry` / `supervisor` | actor 参照の共有と監視木 |
 | `cli` / `app` | CLI と起動 |
