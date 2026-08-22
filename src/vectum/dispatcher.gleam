@@ -17,8 +17,24 @@ import vectum/storage.{type Delivery, type Store}
 /// claim 間隔(ミリ秒)。
 const poll_interval_ms = 200
 
+/// reap チェック間隔(ミリ秒)。
+const reap_interval_ms = 10_000
+
+/// delivering が滞留と見なすまでの時間。
+/// 配送タイムアウトの 2 倍(最低 10 秒)。実行中の配送を誤って
+/// 再開しないためのマージン。
+fn stale_after_ms(config: Config) -> Int {
+  let doubled = config.delivery.timeout_ms * 2
+  int.max(doubled, 10_000)
+}
+
 type State {
-  State(config: Config, send: fn(Outgoing) -> SendResult, self: Subject(Msg))
+  State(
+    config: Config,
+    send: fn(Outgoing) -> SendResult,
+    self: Subject(Msg),
+    last_reap_ms: Int,
+  )
 }
 
 pub type Msg {
@@ -34,7 +50,12 @@ pub fn start_supervised(
 ) -> Result(actor.Started(Nil), actor.StartError) {
   actor.new_with_initialiser(2000, fn(subject) {
     process.send_after(subject, poll_interval_ms, Tick)
-    actor.initialised(State(config:, send:, self: subject))
+    actor.initialised(State(
+      config:,
+      send:,
+      self: subject,
+      last_reap_ms: clock.now_ms(),
+    ))
     |> actor.returning(Nil)
     |> Ok
   })
@@ -48,12 +69,39 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       case registry.get_store(), registry.get_metrics() {
         Ok(store), Ok(metrics) -> {
           let _ = tick(state.config, store, metrics, state.send)
-          Nil
+          let state = reap_if_due(state, store, metrics)
+          let _ = process.send_after(state.self, poll_interval_ms, Tick)
+          actor.continue(state)
         }
-        _, _ -> Nil
+        _, _ -> {
+          let _ = process.send_after(state.self, poll_interval_ms, Tick)
+          actor.continue(state)
+        }
       }
-      let _ = process.send_after(state.self, poll_interval_ms, Tick)
-      actor.continue(state)
+    }
+  }
+}
+
+fn reap_if_due(state: State, store: Store, metrics: Metrics) -> State {
+  let now = clock.now_ms()
+  case now - state.last_reap_ms >= reap_interval_ms {
+    False -> state
+    True -> {
+      let cutoff = now - stale_after_ms(state.config)
+      case storage.call_reap_stale(store, cutoff, now) {
+        Ok(0) -> Nil
+        Ok(count) -> {
+          metrics.record_reaped(metrics, count)
+          log.info([
+            #("msg", "delivery_reaped"),
+            #("count", int.to_string(count)),
+            #("cutoff_ms", int.to_string(cutoff)),
+          ])
+        }
+        Error(error) ->
+          log.error([#("msg", "reap_failed"), #("error", string.inspect(error))])
+      }
+      State(..state, last_reap_ms: now)
     }
   }
 }

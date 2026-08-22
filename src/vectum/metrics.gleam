@@ -17,6 +17,7 @@ pub type Snapshot {
     deliveries_dead: Int,
     latency_sum_ms: Int,
     latency_count: Int,
+    reaped: Int,
   )
 }
 
@@ -27,6 +28,7 @@ pub type Message {
   DeliverySuccess(latency_ms: Int)
   DeliveryRetry
   DeliveryDead
+  Reaped(Int)
   Read(reply: Subject(Snapshot))
 }
 
@@ -50,7 +52,7 @@ pub fn start_supervised() -> Result(actor.Started(Metrics), actor.StartError) {
 }
 
 pub fn empty() -> Snapshot {
-  Snapshot(0, 0, 0, 0, 0, 0, 0, 0)
+  Snapshot(0, 0, 0, 0, 0, 0, 0, 0, 0)
 }
 
 pub fn record_received(metrics: Metrics) -> Nil {
@@ -77,6 +79,11 @@ pub fn record_dead(metrics: Metrics) -> Nil {
   process.send(metrics.subject, DeliveryDead)
 }
 
+/// 滞留 delivering を再開した数を記録する。
+pub fn record_reaped(metrics: Metrics, count: Int) -> Nil {
+  process.send(metrics.subject, Reaped(count))
+}
+
 pub fn snapshot(metrics: Metrics) -> Snapshot {
   process.call(metrics.subject, 1000, Read)
 }
@@ -101,6 +108,12 @@ pub fn prometheus(snapshot: Snapshot, pending: Int) -> String {
     comment("deliveries_dead_total", "Dead-lettered deliveries"),
     type_line("deliveries_dead_total", "counter"),
     metric("deliveries_dead_total", snapshot.deliveries_dead),
+    comment(
+      "deliveries_reaped_total",
+      "Stale deliveries requeued by the reaper",
+    ),
+    type_line("deliveries_reaped_total", "counter"),
+    metric("deliveries_reaped_total", snapshot.reaped),
     comment("delivery_latency_milliseconds_sum", "Delivery latency sum"),
     type_line("delivery_latency_milliseconds_sum", "counter"),
     metric("delivery_latency_milliseconds_sum", snapshot.latency_sum_ms),
@@ -122,6 +135,7 @@ fn handle(state: Snapshot, message: Message) -> actor.Next(Snapshot, Message) {
       Snapshot(..state, deliveries_retry: state.deliveries_retry + 1)
     DeliveryDead ->
       Snapshot(..state, deliveries_dead: state.deliveries_dead + 1)
+    Reaped(count) -> Snapshot(..state, reaped: state.reaped + count)
     DeliverySuccess(latency_ms) ->
       Snapshot(
         ..state,

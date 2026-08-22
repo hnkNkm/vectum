@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 滞留 delivering を検出して再開する reaper を dispatcher に追加。10 秒間隔でチェックし、「配送タイムアウト ×2(最低 10 秒)」より古いものを pending に戻す。メトリクス `deliveries_reaped_total` とログ `delivery_reaped` で観測可能
 - Storage / Metrics / Dispatcher を OTP Supervisor(one_for_one)配下に置き、クラッシュ時に自動再起動するようにした。参照は registry(persistent_term)経由で共有し、Ingress / Dispatcher は再起動後の actor に自動追従する
 - SIGTERM / SIGINT での graceful shutdown を追加。受付 503 化、dispatcher の claim 停止、実行中ワーカーの完了待ち(既定 10 秒、`VECTUM_SHUTDOWN_GRACE_MS` で変更)
 - Envelope の JSON キーを仕様どおり `time` に揃えた

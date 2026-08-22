@@ -12,6 +12,7 @@ pub fn prometheus_export_contains_required_series_test() {
       deliveries_dead: 1,
       latency_sum_ms: 50,
       latency_count: 2,
+      reaped: 0,
     )
   let text = metrics.prometheus(snap, 7)
   assert string.contains(text, "events_received_total 3")

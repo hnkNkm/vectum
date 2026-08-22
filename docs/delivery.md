@@ -64,4 +64,4 @@ pending → delivering → success
                    └→ dead_letter
 ```
 
-起動時は `delivering` を `pending` に戻す。
+起動時は `delivering` を `pending` に戻す。加えて実行中も dispatcher が定期的に滞留 `delivering` を掃す(reaper)。`updated_at` が「配送タイムアウトの 2 倍(最低 10 秒)」より古い delivering は `pending` に戻り、自動的に再配送される。ワーカーのクラッシュ等で失われた配送の検出手段。再開された数は `deliveries_reaped_total` メトリクスと `delivery_reaped` ログで観測できる。
