@@ -22,7 +22,7 @@
         erlang = beamPackages.erlang;
         rebar3 = beamPackages.rebar3;
 
-        # spec.md の要件:
+        # docs/ の要件:
         #   - SQLite Persistence (esqlite / sqlight などの NIF をビルドする)
         #   - HMAC Verification / Signing (crypto NIF が OpenSSL を要求する)
         runtimeDeps = with pkgs; [

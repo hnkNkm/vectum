@@ -14,4 +14,3 @@ result-*
 *.log
 erl_crash.dump
 README.md
-spec.md

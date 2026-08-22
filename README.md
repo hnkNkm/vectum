@@ -8,7 +8,7 @@ Gleam / BEAM で構築された、クラウド・オンプレミス・エッジ�
 
 Amazon EventBridge の完全互換実装ではありません。Kafka / RabbitMQ / Camel の代替でもありません。小さな Webhook 集約やオンプレ連携には過剰だが、大規模バスはまだ早い、という用途向けです。
 
-詳細仕様は [spec.md](./spec.md) を参照してください。
+詳細仕様は [docs/](./docs/README.md) を参照してください。v0.1 の充足状況は [docs/spec-compliance.md](./docs/spec-compliance.md) です。
 
 ## 特徴 (v0.1)
 
@@ -162,34 +162,15 @@ gleam build
 ```sh
 docker build -t vectum:0.1.0 .
 docker run --rm -p 8080:8080 \
-  -v ./router.toml:/app/router.toml:ro \
+  -e VECTUM_CONFIG=/config/router.toml \
+  -v ./router.toml:/config/router.toml:ro \
   -v ./data:/data \
   vectum:0.1.0
 ```
 
 ## v0.1 での実装判断
 
-仕様 §30 の未決事項は次のように固定しています。
-
-| 項目 | 決定 |
-| --- | --- |
-| 正式名称 / CLI | `vectum` |
-| Event ID | UUID v7 (`youid`) |
-| JSON 内部表現 | `EventValue` (Null / Bool / Int / Float / String / Array / Object) |
-| HTTP Server | [mist](https://hex.pm/packages/mist) |
-| HTTP Client | [gleam_httpc](https://hex.pm/packages/gleam_httpc) |
-| SQLite | [sqlight](https://hex.pm/packages/sqlight) |
-| TOML | [tom](https://hex.pm/packages/tom) |
-| HMAC | [gleam_crypto](https://hex.pm/packages/gleam_crypto) SHA-256。Source は GitHub 互換 `sha256=<hex>` |
-| Worker | Destination 単位ではなく、共有 worker pool + SQLite からの claim |
-| Retention | v0.1 では自動削除しない |
-| Source 認証 | Source ごとの HMAC。`hmac_secret` または `hmac_secret_env` |
-| Destination 秘密情報 | `hmac_secret` / `hmac_secret_env` |
-| Metrics | `GET /metrics` の Prometheus テキスト |
-| Hot reload | なし (再起動で再読込) |
-| Payload 上限 | 既定 1 MiB (`server.max_body_bytes`) |
-| 配送並列数 | 既定 8 (`delivery.concurrency`) |
-| Dedup | 同一 Event × Destination は Delivery 1 件 |
+名称、ライブラリ、Worker 粒度などの固定事項は [docs/decisions.md](./docs/decisions.md) にあります。
 
 ## ライセンス
 
