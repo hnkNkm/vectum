@@ -1,7 +1,8 @@
-# Gleam
+# Gleam / BEAM
 *.beam
 *.ez
 /build
+erl_crash.dump
 
 # SQLite (spec: storage.path)
 *.db
@@ -10,11 +11,26 @@
 *.db-shm
 router.db*
 
-# Erlang crash dump
-erl_crash.dump
+# ランタイムデータ
+/data/
 
-# direnv
-.direnv/
-
-# 環境変数ファイル (HMAC secret 等を環境変数で渡すため)
+# 環境変数 (HMAC secret 等)
 .env
+.env.*
+!.env.example
+
+# direnv / Nix
+.direnv/
+/result
+/result-*
+
+# エディタ / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# テスト一時ファイル
+/tmp/
+*.log

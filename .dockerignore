@@ -1,0 +1,17 @@
+.git
+.direnv
+.github
+build
+data
+result
+result-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+*.log
+erl_crash.dump
+README.md
+spec.md

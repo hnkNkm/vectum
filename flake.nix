@@ -1,5 +1,5 @@
 {
-  description = "Gleam Event Router - lightweight, self-hosted event router for cloud, on-premise, and edge environments";
+  description = "vectum - lightweight, self-hosted event router for cloud, on-premise, and edge environments";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -38,7 +38,7 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          name = "event-router-dev";
+          name = "vectum-dev";
 
           packages =
             [
@@ -69,28 +69,25 @@
 
           shellHook = ''
             echo ""
-            echo "=== Gleam Event Router 開発環境 ==="
+            echo "=== vectum 開発環境 ==="
             echo "  Gleam : $(gleam --version 2>/dev/null || echo 'not found')"
             echo "  Erlang/OTP: $(erl -noshell -eval 'io:format("OTP ~s", [erlang:system_info(otp_release)])' -s init stop 2>/dev/null || erl +V)"
             echo ""
             echo "主なコマンド:"
-            echo "  gleam run     -- アプリケーションを実行"
-            echo "  gleam test    -- テストを実行"
-            echo "  gleam build   -- ビルド"
-            echo "  gleam check   -- 型チェック"
-            echo "  router validate --config router.toml  (実装後)"
+            echo "  gleam test"
+            echo "  gleam run -- validate --config examples/router.toml"
+            echo "  gleam run -- run --config router.toml"
             echo "==================================="
           '';
         };
 
-        # プロジェクト本体 (gleam.toml が存在する場合のみビルド)
         packages.default =
           let
             gleamTomlExists = builtins.pathExists ./gleam.toml;
           in
           if gleamTomlExists then
             pkgs.stdenv.mkDerivation {
-              pname = "event-router";
+              pname = "vectum";
               version = "0.1.0";
 
               src = ./.;
@@ -120,25 +117,24 @@
                 mkdir -p $out/bin
                 gleam export erlang-shipment
                 cp -r build/erlang-shipment $out/libexec
-                makeWrapper ${erlang}/bin/erl $out/bin/router \
-                  --prefix PATH : ${pkgs.lib.makeBinPath [ erlang ]} \
-                  --add-flags "-pa $out/libexec/ebin -eval 'router@@main:run(router)' -noshell"
+                makeWrapper $out/libexec/entrypoint.sh $out/bin/vectum \
+                  --prefix PATH : ${pkgs.lib.makeBinPath [ erlang ]}
                 runHook postInstall
               '';
 
               meta = with pkgs.lib; {
                 description = "A lightweight, reliable, self-hosted event router built with Gleam and BEAM";
-                license = licenses.unfree;
-                mainProgram = "router";
+                license = licenses.asl20;
+                mainProgram = "vectum";
               };
             }
           else
-            pkgs.runCommand "event-router-not-ready"
+            pkgs.runCommand "vectum-not-ready"
               {
                 passthru.meta.description = "gleam.toml が存在しないため未ビルド";
               }
               ''
-                echo "gleam.toml が存在しません。まず 'gleam new . --name router' 等でプロジェクトを初期化してください" >&2
+                echo "gleam.toml が存在しません。まず gleam プロジェクトを初期化してください" >&2
                 exit 1
               '';
 

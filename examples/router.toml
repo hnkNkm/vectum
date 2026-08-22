@@ -1,0 +1,89 @@
+# vectum v0.1 設定例
+#
+#   gleam run -- validate --config examples/router.toml
+#   gleam run -- run --config examples/router.toml
+
+[server]
+host = "0.0.0.0"
+port = 8080
+max_body_bytes = 1048576
+
+[storage]
+path = "./router.db"
+
+[[sources]]
+name = "github"
+path = "/events/github"
+type_from_header = "X-GitHub-Event"
+hmac_secret_env = "GITHUB_WEBHOOK_SECRET"
+hmac_header = "X-Hub-Signature-256"
+
+[[sources]]
+name = "internal"
+path = "/events/internal"
+type_from_json = "type"
+
+[[sources]]
+name = "monitoring"
+path = "/events/monitoring"
+type_fixed = "alert"
+
+[[destinations]]
+name = "ci"
+type = "http"
+url = "http://127.0.0.1:9091/events"
+timeout_ms = 5000
+
+[[destinations]]
+name = "audit"
+type = "http"
+url = "http://127.0.0.1:9092/events"
+hmac_secret_env = "AUDIT_HMAC_SECRET"
+hmac_header = "X-Vectum-Signature"
+
+[[destinations]]
+name = "notify"
+type = "http"
+url = "http://127.0.0.1:9093/events"
+
+[[routes]]
+name = "github-push"
+source = "github"
+event = "push"
+destinations = ["ci", "audit"]
+
+[[routes]]
+name = "backend-pr"
+source = "github"
+event = "pull_request"
+destinations = ["audit"]
+
+[[routes.filters]]
+path = "repository.name"
+op = "eq"
+value = "backend"
+
+[[routes]]
+name = "internal-all"
+source = "internal"
+event = "*"
+destinations = ["audit"]
+
+[[routes]]
+name = "critical-alert"
+source = "monitoring"
+event = "alert"
+destinations = ["notify", "audit"]
+
+[[routes.filters]]
+path = "severity"
+op = "eq"
+value = "critical"
+
+[delivery]
+max_attempts = 8
+timeout_ms = 10000
+initial_backoff_ms = 1000
+max_backoff_ms = 60000
+jitter = true
+concurrency = 8
