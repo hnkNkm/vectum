@@ -13,6 +13,7 @@ import vectum/env
 import vectum/ingress
 import vectum/log
 import vectum/metrics
+import vectum/shutdown
 import vectum/storage
 
 pub fn run_command(arguments: List(String)) -> Nil {
@@ -55,6 +56,7 @@ pub fn validate(path: String) -> Nil {
 
 pub fn run_server(path: String) -> Nil {
   let parsed = require_config(path)
+  shutdown.init()
   let store = require_store(parsed.storage.path)
   let metrics = require_metrics()
   let _ = dispatcher.start(parsed, store, metrics, delivery.send_http)
@@ -64,6 +66,7 @@ pub fn run_server(path: String) -> Nil {
     |> mist.bind(parsed.server.host)
     |> mist.port(parsed.server.port)
     |> mist.start
+  shutdown.install_handler(shutdown.run_shutdown_sequence)
   log.info([
     #("msg", "listening"),
     #("host", parsed.server.host),

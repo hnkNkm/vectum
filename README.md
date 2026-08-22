@@ -23,6 +23,7 @@ Amazon EventBridge の完全互換実装ではありません。Kafka / RabbitMQ
 - Prometheus 互換メトリクス
 - TOML 設定と CLI
 - オフライン / 閉域網で運用可能
+- SIGTERM / SIGINT での graceful shutdown
 
 ## 必要環境
 

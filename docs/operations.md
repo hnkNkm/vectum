@@ -34,7 +34,14 @@ Ingress の TLS は reverse proxy に委譲する。
 
 ## Graceful Shutdown
 
-仕様は「新規受付を止め、進行中の Storage Transaction を安全に終え、可能な範囲で進行中 Delivery を永続化する」としている。v0.1 実装は未対応で、プロセスは起動後スリープし続ける。停止は OS シグナルによる強制終了になる。起動時の `delivering` → `pending` 復旧で未完了配送は再開できる。
+SIGTERM / SIGINT を受けると次の順で停止する。
+
+1. 受付停止フラグを立てる。`POST /events` と `GET /ready` は `503` を返し、LB による drain が可能
+2. dispatcher は新しい Delivery の claim を止める
+3. 実行中の配送ワーカーの完了を待つ。猶予は既定 10 秒(`VECTUM_SHUTDOWN_GRACE_MS` で変更可)
+4. 猶予を過ぎたら強制終了する。未完了 Delivery は次回起動時の復旧で再開される
+
+仕様が求める「新規受付の停止」「進行中 Storage Transaction の安全な終了」「進行中 Delivery の永続化」を満たす。listen socket の明示 close はせず、503 応答による drain を行う。
 
 ## スケール境界
 

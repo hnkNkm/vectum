@@ -1,6 +1,6 @@
 # 仕様準拠状況（v0.1）
 
-結論: **v0.1 必須機能はほぼ満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。一方で Metadata フィルタ、カスタム Source path、OTP Supervisor 木、Graceful shutdown は未達または部分実装。
+結論: **v0.1 必須機能はほぼ満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。一方で Metadata フィルタ、カスタム Source path、OTP Supervisor 木は未達または部分実装。
 
 対象仕様は [docs/](./README.md) 配下の文書です。
 
@@ -37,6 +37,7 @@
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
 - Event 取得失敗や未知 Destination などの内部エラーも同じ backoff / `max_attempts` を適用する
 - Destination へ `X-Event-Id` と `Idempotency-Key` を付与
+- SIGTERM / SIGINT で受付停止(503)→ 実行中ワーカーの完了待ち → 終了。猶予は `VECTUM_SHUTDOWN_GRACE_MS`(既定 10 秒)
 - `GET /health`、`GET /ready`、構造化 JSON ログ
 - オフライン起動（Destination が Internet 上ならその通信のみ必要）
 - HTTPS Destination は httpc TLS。Ingress TLS は reverse proxy 前提
@@ -48,7 +49,6 @@
 | Metadata フィルタ | Source / Type / Data / **Metadata** を条件にできる | フィルタは `event.data` のみ |
 | Source `path` | 設定例にカスタム path | Ingress は `/events/:name` 固定。`find_source_by_path` は未使用 |
 | OTP RootSupervisor | Supervisor で障害隔離 | Storage / Metrics は actor。dispatcher は `process.spawn`。静的 Supervisor 木はない |
-| Graceful shutdown | 受付停止と進行中 txn / Delivery の安全終了 | `sleep_forever` のみ。起動時復旧で未完了は再開できる |
 | メトリクス名 | 候補 `events_accepted_total`、`delivery_latency_seconds` ヒストグラム | `events_received_total` とミリ秒の sum/count |
 | CLI 名 | プレースホルダ `router` | 製品名 `vectum`（意図した差分） |
 | モジュール配置 | 層分けの例 | `src/vectum/*.gleam` に平坦化（仕様も過剰な層は避けるとしている） |
@@ -65,5 +65,5 @@ Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、`
 
 1. Metadata をフィルタ対象にする
 2. `sources.path` を Ingress 照合に使う、または仕様から外す
-3. gleam/otp Supervisor とシグナルでの graceful shutdown
+3. gleam/otp Supervisor による障害自動復旧(graceful shutdown は対応済み)
 4. 存在しない dead-letter ID をエラーにする
