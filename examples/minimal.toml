@@ -9,6 +9,7 @@ path = "./router.db"
 
 [[sources]]
 name = "internal"
+# path は現状未使用。URL は /events/<name> 固定
 path = "/events/internal"
 type_from_json = "type"
 

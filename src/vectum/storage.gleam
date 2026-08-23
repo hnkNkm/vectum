@@ -78,8 +78,8 @@ pub type Message {
     now_ms: Int,
   )
   ListDead(reply: Subject(Result(List(Delivery), sqlight.Error)))
-  RetryDead(reply: Subject(Result(Nil, sqlight.Error)), id: String, now_ms: Int)
-  DeleteDead(reply: Subject(Result(Nil, sqlight.Error)), id: String)
+  RetryDead(reply: Subject(Result(Int, sqlight.Error)), id: String, now_ms: Int)
+  DeleteDead(reply: Subject(Result(Int, sqlight.Error)), id: String)
   PendingCount(reply: Subject(Result(Int, sqlight.Error)))
   Ping(reply: Subject(Result(Nil, sqlight.Error)))
 }
@@ -435,7 +435,7 @@ pub fn retry_dead(
   conn: sqlight.Connection,
   id: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   sqlight.query(
     "update deliveries
      set status = 'pending', attempts = 0, next_attempt_at = ?,
@@ -445,20 +445,35 @@ pub fn retry_dead(
     with: [sqlight.int(now_ms), sqlight.int(now_ms), sqlight.text(id)],
     expecting: decode.success(Nil),
   )
-  |> result.replace(Nil)
+  |> result.map(fn(_) { Nil })
+  |> result.try(fn(_) { changed_rows(conn) })
 }
 
 pub fn delete_dead(
   conn: sqlight.Connection,
   id: String,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   sqlight.query(
     "delete from deliveries where id = ? and status = 'dead_letter'",
     on: conn,
     with: [sqlight.text(id)],
     expecting: decode.success(Nil),
   )
-  |> result.replace(Nil)
+  |> result.map(fn(_) { Nil })
+  |> result.try(fn(_) { changed_rows(conn) })
+}
+
+fn changed_rows(conn: sqlight.Connection) -> Result(Int, sqlight.Error) {
+  use rows <- result.try(
+    sqlight.query("select changes()", on: conn, with: [], expecting: {
+      use n <- decode.field(0, decode.int)
+      decode.success(n)
+    }),
+  )
+  case rows {
+    [n] -> Ok(n)
+    _ -> Ok(0)
+  }
 }
 
 pub fn count_pending(conn: sqlight.Connection) -> Result(Int, sqlight.Error) {
@@ -600,7 +615,7 @@ pub fn call_retry_dead(
   store: Store,
   id: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   process.call(store.subject, 5000, fn(reply) {
     RetryDead(reply:, id:, now_ms:)
   })
@@ -609,7 +624,7 @@ pub fn call_retry_dead(
 pub fn call_delete_dead(
   store: Store,
   id: String,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   process.call(store.subject, 5000, fn(reply) { DeleteDead(reply:, id:) })
 }
 

@@ -13,6 +13,7 @@ path = "./router.db"
 
 [[sources]]
 name = "github"
+# path は現状未使用。URL は /events/<name> 固定
 path = "/events/github"
 type_from_header = "X-GitHub-Event"
 hmac_secret_env = "GITHUB_WEBHOOK_SECRET"
@@ -20,11 +21,13 @@ hmac_header = "X-Hub-Signature-256"
 
 [[sources]]
 name = "internal"
+# path は現状未使用。URL は /events/<name> 固定
 path = "/events/internal"
 type_from_json = "type"
 
 [[sources]]
 name = "monitoring"
+# path は現状未使用。URL は /events/<name> 固定
 path = "/events/monitoring"
 type_fixed = "alert"
 

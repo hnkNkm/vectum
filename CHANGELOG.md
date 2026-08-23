@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `vectum dead retry` / `dead delete` で該当 ID の `dead_letter` が存在しない場合にエラー終了するようにした(以前は無関係でも成功扱い)
+- 未使用の `config.find_source_by_path` を削除。Source の `path` キーは照合に使わないことを README・examples に明記
 - `mark_success` / `mark_retry` / `mark_dead` を `delivering` 状態の行に限定。reaper 後の旧ワーカーの遅延完了が新しい claim の結果を上書きしない
 - `delivery.concurrency` を実行中ワーカー数の上限として動作させるようにした(以前は 1 tick あたりの claim 数だった)。遅い Destination でもワーカーが増殖しない
 - レビューの残り指摘: architecture.md に起動時のみ recover する旨を追記。reaper 閾値の単体テストを追加。一時 DB を `tmp/` に移し、復旧テストは同一 Delivery の再開で検証する

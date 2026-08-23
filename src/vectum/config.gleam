@@ -104,13 +104,6 @@ pub fn find_source(config: Config, name: String) -> Result(Source, Nil) {
   list.find(config.sources, fn(source) { source.name == name })
 }
 
-pub fn find_source_by_path(
-  config: Config,
-  path: String,
-) -> Result(Source, Nil) {
-  list.find(config.sources, fn(source) { source.path == path })
-}
-
 pub fn find_destination(
   config: Config,
   name: String,

@@ -120,6 +120,10 @@ jitter = true
 
 起動時に設定全体を検証し、不正があればプロセスを終了します。
 
+> Source の `path` キーは現在未使用です。受信 URL は常に `/events/<name>` 固定です(将来のカスタムパス対応に備えた記録用キー)。
+
+> Source の `path` キーは現在未使用です。受信 URL は常に `/events/<name>` 固定です(将来のカスタムパス対応に備えた記録用キー)。
+
 ## HTTP API
 
 | Method | Path | 説明 |
