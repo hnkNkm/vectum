@@ -63,4 +63,4 @@ Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、`
 
 ## 次に埋めるなら
 
-1. `sources.path` を Ingress 照合に使う、または仕様から外す
+現状なし。v0.1 での割り切りは [decisions.md](./decisions.md)、将来候補は [roadmap.md](./roadmap.md) を参照。

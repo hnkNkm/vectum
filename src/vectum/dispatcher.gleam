@@ -15,6 +15,11 @@ import vectum/registry
 import vectum/shutdown
 import vectum/storage.{type Delivery, type Store}
 
+/// body を実行し、例外(panic)があっても必ず after を呼んでから返す。
+/// ワーカー枠の解放を panic でも保証するためのガード。
+@external(erlang, "vectum_ffi", "run_guarded")
+fn run_guarded(body: fn() -> a, after: fn() -> Nil) -> Nil
+
 /// claim 間隔(ミリ秒)。
 const poll_interval_ms = 200
 
@@ -133,8 +138,14 @@ pub fn tick(
               // claim と同時に枠を予約する。次の tick が読む前に確定させる
               shutdown.worker_started()
               process.spawn(fn() {
-                let _ = process_one_inner(config, store, metrics, send, item)
-                shutdown.worker_finished()
+                run_guarded(
+                  fn() {
+                    let _ =
+                      process_one_inner(config, store, metrics, send, item)
+                    Nil
+                  },
+                  fn() { shutdown.worker_finished() },
+                )
               })
               Nil
             })
@@ -153,13 +164,15 @@ pub fn process_one(
   item: Delivery,
 ) -> Nil {
   shutdown.worker_started()
-  let _ = process_one_inner(config, store, metrics, send, item)
-  shutdown.worker_finished()
-  Nil
+  run_guarded(
+    fn() {
+      let _ = process_one_inner(config, store, metrics, send, item)
+      Nil
+    },
+    fn() { shutdown.worker_finished() },
+  )
 }
 
-/// 注意: panic 時は worker_finished が呼ばれずカウンタが漏れるが、
-/// shutdown 側は猶予時間で打ち切るため終了は止まらない。
 fn process_one_inner(
   config: Config,
   store: Store,
