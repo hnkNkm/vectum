@@ -118,27 +118,35 @@ pub fn reap_stale_delivering_moves_only_old_rows_test() {
 
 /// actor 再起動相当では recover が走らず、delivering が保持されること。
 pub fn actor_start_does_not_recover_test() {
-  let path = "tmp-vectum-recover-test.db"
-  let _ = simplifile.delete(path)
+  let path = "tmp/vectum-recover-test.db"
+  let _ = simplifile.create_directory("tmp")
+  remove_db(path)
 
-  // 接続を開いて delivering を 1 件作る
   let assert Ok(conn) = storage.connect(path)
   let assert Ok(_) = storage.migrate(conn)
   let ev = sample_event("evt-norecover")
   let assert Ok([_d]) = storage.accept(conn, ev, ["ci"], 1000, ["nr-1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
-  let _ = claimed
 
   // actor を起動しても recover は走らない → claim できる pending は無い
-  let assert Ok(store) = storage.start_supervised(path)
-  let store = store.data
+  let assert Ok(started) = storage.start_supervised(path)
+  let store = started.data
   let assert Ok([]) = storage.call_claim_due(store, 5000, 10)
 
-  // 明示的な起動時復旧なら pending に戻り、再開できる
+  // 明示的な起動時復旧なら同じ Delivery が pending に戻り、再開できる
   let assert Ok(1) = storage.open_and_recover(path, 6000)
   let assert Ok([recovered]) = storage.call_claim_due(store, 6000, 10)
-  assert recovered.attempts == 0
+  assert recovered.id == claimed.id
 
   let assert Ok(_) = sqlight.close(conn)
+  // actor はテスト VM 終了まで残る。ファイルは gitignore 済みの tmp/ に置く。
+  remove_db(path)
+}
+
+fn remove_db(path: String) -> Nil {
   let _ = simplifile.delete(path)
+  let _ = simplifile.delete(path <> "-wal")
+  let _ = simplifile.delete(path <> "-shm")
+  let _ = simplifile.delete(path <> "-journal")
+  Nil
 }

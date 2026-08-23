@@ -24,7 +24,7 @@ const reap_interval_ms = 10_000
 /// delivering が滞留と見なすまでの時間。
 /// Destination の実効タイムアウト(個別指定、無ければ [delivery].timeout_ms)
 /// の最大値の 2 倍、最低 10 秒。実行中の配送を誤って再開しないためのマージン。
-fn stale_after_ms(config: Config) -> Int {
+pub fn stale_after_ms(config: Config) -> Int {
   let max_timeout =
     list.fold(config.destinations, config.delivery.timeout_ms, fn(acc, dest) {
       let config.HttpDestination(timeout_ms:, ..) = dest
