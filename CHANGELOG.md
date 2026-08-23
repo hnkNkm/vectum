@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `mark_success` / `mark_retry` / `mark_dead` を `delivering` 状態の行に限定。reaper 後の旧ワーカーの遅延完了が新しい claim の結果を上書きしない
+- `delivery.concurrency` を実行中ワーカー数の上限として動作させるようにした(以前は 1 tick あたりの claim 数だった)。遅い Destination でもワーカーが増殖しない
 - レビューの残り指摘: architecture.md に起動時のみ recover する旨を追記。reaper 閾値の単体テストを追加。一時 DB を `tmp/` に移し、復旧テストは同一 Delivery の再開で検証する
 - レビュー指摘対応: Storage actor 再起動時に `recover()` を実行しないように変更。全件復旧はプロセス起動時のみ(`storage.open_and_recover`)。実行中ワーカーとの即時二重配送を防止し、滞留は reaper に一任
 - reaper の滞留閾値に Destination 個別タイムアウトを反映(各 Destination の実効タイムアウト最大値 ×2、最低 10 秒)

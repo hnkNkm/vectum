@@ -319,7 +319,7 @@ pub fn mark_retry(
     "update deliveries
      set status = 'retry_scheduled', attempts = ?, next_attempt_at = ?,
          last_attempt_at = ?, last_error = ?, updated_at = ?
-     where id = ?",
+     where id = ? and status = 'delivering'",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -345,7 +345,7 @@ pub fn mark_dead(
     "update deliveries
      set status = 'dead_letter', attempts = ?, last_attempt_at = ?,
          last_error = ?, updated_at = ?
-     where id = ?",
+     where id = ? and status = 'delivering'",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -368,11 +368,13 @@ fn update_delivery(
   now_ms: Int,
   error: Option(String),
 ) -> Result(Nil, sqlight.Error) {
+  // mark_* は delivering の間だけ有効。reaper 後の旧ワーカーの遅延完了が、
+  // 新しい claim の結果を上書きしないようにする。
   sqlight.query(
     "update deliveries
      set status = ?, attempts = ?, last_attempt_at = ?, last_error = ?,
          updated_at = ?
-     where id = ?",
+     where id = ? and status = 'delivering'",
     on: conn,
     with: [
       sqlight.text(status),

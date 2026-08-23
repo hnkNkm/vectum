@@ -50,7 +50,7 @@ concurrency = 8
 
 Backoff は exponential + equal jitter。上限は `max_backoff_ms`（既定 60s）。`Retry-After` は v0.1 では未対応。
 
-並列数は `concurrency`（既定 8）。Destination 単位の Supervisor ではなく、共有 worker pool が SQLite から due Delivery を claim する。
+並列数は `concurrency`(既定 8)。実行中ワーカー数がこの上限を超えないよう、dispatcher は空き枠分だけ SQLite から due Delivery を claim する(Destination 単位の Supervisor ではなく共有 worker pool)。
 
 ## Dead Letter
 
