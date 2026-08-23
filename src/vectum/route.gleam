@@ -1,5 +1,8 @@
+import gleam/dict
 import gleam/list
+import gleam/result
 import gleam/set
+import gleam/string
 import vectum/event.{type Event}
 import vectum/filter.{type Filter}
 
@@ -28,7 +31,22 @@ pub fn matching_routes(routes: List(Route), event: Event) -> List(Route) {
 pub fn matches_route(route: Route, event: Event) -> Bool {
   route.source == event.source
   && event_type_matches(route.event, event.event_type)
-  && filter.matches_all(route.filters, event.data)
+  && list.all(route.filters, fn(filter) {
+    filter.matches_value(filter, lookup_value(event, filter.path))
+  })
+}
+
+/// フィルタパスの解決。`metadata.` プレフィックスで Event Metadata を、
+/// それ以外は Event Data の dotted path を辿る。
+fn lookup_value(event: Event, path: String) -> Result(event.EventValue, Nil) {
+  case string.starts_with(path, "metadata.") {
+    True -> {
+      let key = string.drop_start(path, string.length("metadata."))
+      dict.get(event.metadata, key)
+      |> result.map(event.String)
+    }
+    False -> event.get_path(event.data, path)
+  }
 }
 
 fn event_type_matches(pattern: String, event_type: String) -> Bool {
