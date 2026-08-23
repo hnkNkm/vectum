@@ -39,7 +39,7 @@
 - Destination へ `X-Event-Id` と `Idempotency-Key` を付与
 - SIGTERM / SIGINT で受付停止(503)→ 実行中ワーカーの完了待ち → 終了。猶予は `VECTUM_SHUTDOWN_GRACE_MS`(既定 10 秒)
 - Storage / Metrics / Dispatcher を static_supervisor(one_for_one, permanent)配下に置き、クラッシュ時に自動再起動する。参照は registry 経由で共有
-- 実行中に滞留した delivering を dispatcher の reaper が定期的に検出して pending に戻す(閾値は配送タイムアウトの 2 倍、最低 10 秒)
+- 実行中に滞留した delivering を dispatcher の reaper が定期的に検出して pending に戻す(閾値は実効タイムアウト最大値 ×2、最低 10 秒)
 - `GET /health`、`GET /ready`、構造化 JSON ログ
 - オフライン起動（Destination が Internet 上ならその通信のみ必要）
 - HTTPS Destination は httpc TLS。Ingress TLS は reverse proxy 前提

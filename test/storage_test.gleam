@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{Some}
+import simplifile
 import sqlight
 import vectum/event
 import vectum/storage
@@ -113,4 +114,31 @@ pub fn reap_stale_delivering_moves_only_old_rows_test() {
 
   // 新しい時刻の delivering は残る
   let assert Ok(0) = storage.reap_stale_delivering(conn, 2000, 4000)
+}
+
+/// actor 再起動相当では recover が走らず、delivering が保持されること。
+pub fn actor_start_does_not_recover_test() {
+  let path = "tmp-vectum-recover-test.db"
+  let _ = simplifile.delete(path)
+
+  // 接続を開いて delivering を 1 件作る
+  let assert Ok(conn) = storage.connect(path)
+  let assert Ok(_) = storage.migrate(conn)
+  let ev = sample_event("evt-norecover")
+  let assert Ok([_d]) = storage.accept(conn, ev, ["ci"], 1000, ["nr-1"])
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
+  let _ = claimed
+
+  // actor を起動しても recover は走らない → claim できる pending は無い
+  let assert Ok(store) = storage.start_supervised(path)
+  let store = store.data
+  let assert Ok([]) = storage.call_claim_due(store, 5000, 10)
+
+  // 明示的な起動時復旧なら pending に戻り、再開できる
+  let assert Ok(1) = storage.open_and_recover(path, 6000)
+  let assert Ok([recovered]) = storage.call_claim_due(store, 6000, 10)
+  assert recovered.attempts == 0
+
+  let assert Ok(_) = sqlight.close(conn)
+  let _ = simplifile.delete(path)
 }

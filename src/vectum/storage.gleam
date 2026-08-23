@@ -120,6 +120,19 @@ pub fn connect(path: String) -> Result(sqlight.Connection, sqlight.Error) {
   sqlight.open(path)
 }
 
+/// プロセス起動時に一度だけ呼ぶ全件復旧。
+/// delivering を pending に戻し、未完了配送を再開する。
+/// actor 再起動時には呼ばない(二重配送防止)。滞留は reaper が拾う。
+pub fn open_and_recover(path: String, now_ms: Int) -> Result(Int, String) {
+  use conn <- result.try(connect(path) |> result.map_error(string.inspect))
+  let recovered = case migrate(conn) {
+    Error(error) -> Error(string.inspect(error))
+    Ok(_) -> recover(conn, now_ms) |> result.map_error(string.inspect)
+  }
+  let _ = sqlight.close(conn)
+  recovered
+}
+
 pub fn migrate(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
   sqlight.exec(schema, conn)
 }
@@ -487,8 +500,10 @@ pub fn start_supervised(
       Ok(conn) ->
         case migrate(conn) {
           Error(error) -> Error(string.inspect(error))
+          // ここでは recover() を呼ばない。actor 再起動時に実行中ワーカーの
+          // 配送を即 requeue すると二重送信になるため、滞留は reaper に委ねる。
+          // 全件復旧はプロセス起動時に open_and_recover で明示的に行う。
           Ok(_) -> {
-            let _ = recover(conn, 0)
             actor.initialised(conn)
             |> actor.returning(Store(subject))
             |> Ok
