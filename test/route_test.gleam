@@ -82,3 +82,68 @@ pub fn wildcard_event_and_filter_test() {
   assert route.select_destinations(routes, ev("internal", "anything", "x"))
     == ["audit"]
 }
+
+// ---- Metadata フィルタ ----
+
+fn meta_ev(metadata: List(#(String, String))) -> event.Event {
+  event.Event(
+    id: "m1",
+    source: "github",
+    event_type: "push",
+    timestamp: "t",
+    data: event.Object(dict.from_list([#("n", event.Int(1))])),
+    metadata: dict.from_list(metadata),
+  )
+}
+
+fn meta_route(op: filter.Op, value: event.EventValue) -> route.Route {
+  Route(
+    name: "m",
+    source: "github",
+    event: "*",
+    destinations: ["out"],
+    filters: [Filter(path: "metadata.x-github-event", op:, value:)],
+  )
+}
+
+pub fn metadata_filter_eq_matches_header_test() {
+  let e = meta_ev([#("x-github-event", "push"), #("authorization", "secret")])
+  assert route.matches_route(meta_route(filter.Eq, event.String("push")), e)
+  assert !route.matches_route(
+    meta_route(filter.Eq, event.String("pull_request")),
+    e,
+  )
+}
+
+pub fn metadata_filter_exists_and_neq_missing_test() {
+  let with_header = meta_ev([#("x-github-event", "push")])
+  let without = meta_ev([])
+
+  // exists / not_exists
+  assert route.matches_route(meta_route(filter.Exists, event.Null), with_header)
+  assert !route.matches_route(meta_route(filter.Exists, event.Null), without)
+
+  // 対象が無い場合の neq は真(Data の neq と同じ意味論)
+  assert route.matches_route(
+    meta_route(filter.Neq, event.String("push")),
+    without,
+  )
+}
+
+pub fn metadata_filter_does_not_leak_into_data_test() {
+  // Data 側に同名キーがあっても、metadata. プレフィックスは Metadata を見る
+  let e =
+    event.Event(
+      id: "d1",
+      source: "github",
+      event_type: "push",
+      timestamp: "t",
+      data: event.Object(
+        dict.from_list([
+          #("x-github-event", event.String("decoy")),
+        ]),
+      ),
+      metadata: dict.from_list([#("x-github-event", "push")]),
+    )
+  assert route.matches_route(meta_route(filter.Eq, event.String("push")), e)
+}

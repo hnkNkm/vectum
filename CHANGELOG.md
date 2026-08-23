@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- フィルタに `metadata.<key>` プレフィックスを追加。HTTP ヘッダ由来の Metadata を条件に振り分けできるようになった(例: `path = "metadata.x-github-event"`)。仕様の Field Filtering を満たす
 - `vectum dead retry` / `dead delete` で該当 ID の `dead_letter` が存在しない場合にエラー終了するようにした(以前は無関係でも成功扱い)
 - 未使用の `config.find_source_by_path` を削除。Source の `path` キーは照合に使わないことを README・examples に明記
 - `mark_success` / `mark_retry` / `mark_dead` を `delivering` 状態の行に限定。reaper 後の旧ワーカーの遅延完了が新しい claim の結果を上書きしない

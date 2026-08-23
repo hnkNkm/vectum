@@ -1,6 +1,6 @@
 # 仕様準拠状況（v0.1）
 
-結論: **v0.1 必須機能はほぼ満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。一方で Metadata フィルタとカスタム Source path は未達または部分実装。
+結論: **v0.1 必須機能はほぼ満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。一方でカスタム Source path は部分実装。
 
 対象仕様は [docs/](./README.md) 配下の文書です。
 
@@ -15,7 +15,7 @@
 | Source Identification | 満たす | URL の `:source` |
 | Event Type Identification | 満たす | header / JSON / 固定値 |
 | Declarative Routing | 満たす | TOML `[[routes]]` |
-| Field Filtering | 部分 | Data は可。Metadata は不可 |
+| Field Filtering | 満たす | Data の dotted path と `metadata.` プレフィックスによる Metadata 条件 |
 | Fan-out | 満たす | 複数 Destination + dest 重複排除 |
 | Retry | 満たす | exp backoff + equal jitter |
 | Timeout | 満たす | Destination または `[delivery].timeout_ms` |
@@ -34,6 +34,7 @@
 
 - 未知 Source は 404。HMAC 失敗は 401。Payload 超過は 413。非 JSON は 415
 - フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path、AND のみ
+- `metadata.<key>` パスで HTTP ヘッダ由来の Metadata をフィルタできる
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
 - Event 取得失敗や未知 Destination などの内部エラーも同じ backoff / `max_attempts` を適用する
 - Destination へ `X-Event-Id` と `Idempotency-Key` を付与
@@ -48,7 +49,6 @@
 
 | 項目 | 仕様 | 実装 |
 | --- | --- | --- |
-| Metadata フィルタ | Source / Type / Data / **Metadata** を条件にできる | フィルタは `event.data` のみ |
 | Source `path` | 設定例にカスタム path | Ingress は `/events/:name` 固定。`path` キーは解析のみで照合には使わない(dead code は削除済み) |
 | メトリクス名 | 候補 `events_accepted_total`、`delivery_latency_seconds` ヒストグラム | `events_received_total` とミリ秒の sum/count |
 | CLI 名 | プレースホルダ `router` | 製品名 `vectum`（意図した差分） |
@@ -63,7 +63,5 @@ Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、`
 
 ## 次に埋めるなら
 
-1. Metadata をフィルタ対象にする
-2. `sources.path` を Ingress 照合に使う、または仕様から外す
-3. 存在しない dead-letter ID をエラーにする
-4. Metrics actor 再起動時のカウンタ永続化(現状はリセット)
+1. `sources.path` を Ingress 照合に使う、または仕様から外す
+2. Metrics actor 再起動時のカウンタ永続化(現状はリセット、observability.md に明記)

@@ -56,4 +56,13 @@ value = "critical"
 
 複数フィルタは AND。OR と nested condition は v0.1 対象外。object の dotted path（例: `repository.name`）はサポートする。配列添字は対象外。任意コード実行はしない。
 
-仕様は Metadata もフィルタ対象にできるとしている。v0.1 実装のフィルタは Event Data のみを見る。詳細は [spec-compliance.md](./spec-compliance.md)。
+`path` に `metadata.` プレフィックスを付けると、Event Data ではなく **Metadata(HTTP ヘッダ由来)** を条件にできる。
+
+```toml
+[[routes.filters]]
+path = "metadata.x-github-event"
+op = "eq"
+value = "push"
+```
+
+プレフィックスがない場合は従来どおり Data の dotted path を解釈する。Metadata の値は文字列として比較する。

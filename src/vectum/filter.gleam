@@ -50,7 +50,12 @@ pub fn op_to_string(op: Op) -> String {
 }
 
 pub fn matches(filter: Filter, data: EventValue) -> Bool {
-  let found = event.get_path(data, filter.path)
+  matches_value(filter, event.get_path(data, filter.path))
+}
+
+/// 解決済みのパス値に対してフィルタを評価する。
+/// Metadata フィルタなど、Data 以外のソースを対象にするために分離している。
+pub fn matches_value(filter: Filter, found: Result(EventValue, Nil)) -> Bool {
   case filter.op {
     Exists -> result_is_ok(found)
     NotExists -> !result_is_ok(found)
