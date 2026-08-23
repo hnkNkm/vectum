@@ -21,7 +21,7 @@
 
 ## メトリクス
 
-`GET /metrics` で Prometheus テキスト形式を返す。
+`GET /metrics` で Prometheus テキスト形式を返す。カウンタはメモリ保持のため、Metrics actor の再起動(Supervisor による自動復旧を含む)で 0 に戻る。永続化は将来検討。
 
 | 名前 | 型 | 説明 |
 | --- | --- | --- |

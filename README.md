@@ -164,7 +164,7 @@ gleam build
 
 ## コンテナ
 
-イメージ既定の設定は `examples/docker.toml` で、SQLite は `/data/router.db` に書きます。独自設定を載せる場合も `storage.path` を `/data` 配下にしてください。
+イメージ既定の設定は `examples/docker.toml` で、SQLite は `/data/router.db` に書きます。独自設定を載せる場合も `storage.path` を `/data` 配下にしてください。既定の Destination は動作確認用プレースホルダのため、上書きしない限り配送は失敗します。コンテナを公開する場合は Source への HMAC 設定が必須です。
 
 ```sh
 docker build -t vectum:0.1.0 .

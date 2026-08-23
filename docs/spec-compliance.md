@@ -64,4 +64,3 @@ Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、`
 ## 次に埋めるなら
 
 1. `sources.path` を Ingress 照合に使う、または仕様から外す
-2. Metrics actor 再起動時のカウンタ永続化(現状はリセット、observability.md に明記)
