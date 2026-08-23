@@ -120,15 +120,27 @@ pub fn tick(
   case shutdown.is_shutting_down() {
     True -> Ok(0)
     False -> {
-      storage.call_claim_due(store, clock.now_ms(), config.concurrency)
-      |> result.map_error(string.inspect)
-      |> result.map(fn(due) {
-        list.each(due, fn(item) {
-          process.spawn(fn() { process_one(config, store, metrics, send, item) })
-          Nil
-        })
-        list.length(due)
-      })
+      // concurrency は同時実行ワーカー数の上限。空き枠だけ claim する
+      let active = shutdown.active_workers()
+      let capacity = int.max(config.concurrency - active, 0)
+      case capacity {
+        0 -> Ok(0)
+        _ ->
+          storage.call_claim_due(store, clock.now_ms(), capacity)
+          |> result.map_error(string.inspect)
+          |> result.map(fn(due) {
+            list.each(due, fn(item) {
+              // claim と同時に枠を予約する。次の tick が読む前に確定させる
+              shutdown.worker_started()
+              process.spawn(fn() {
+                let _ = process_one_inner(config, store, metrics, send, item)
+                shutdown.worker_finished()
+              })
+              Nil
+            })
+            list.length(due)
+          })
+      }
     }
   }
 }
@@ -141,7 +153,7 @@ pub fn process_one(
   item: Delivery,
 ) -> Nil {
   shutdown.worker_started()
-  process_one_inner(config, store, metrics, send, item)
+  let _ = process_one_inner(config, store, metrics, send, item)
   shutdown.worker_finished()
   Nil
 }

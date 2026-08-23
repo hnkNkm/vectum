@@ -62,6 +62,8 @@ pub fn accept_then_successful_delivery_test() {
     )
   let assert Ok(1) = storage.call_pending_count(store)
 
+  // mark_* は delivering の行にしか効かないため、実フローどおり claim する
+  let assert Ok([queued]) = storage.call_claim_due(store, clock.now_ms(), 10)
   dispatcher.process_one(
     cfg(),
     store,
@@ -96,6 +98,8 @@ pub fn failed_4xx_goes_to_dead_letter_test() {
       clock.now_ms(),
       ["dead-int"],
     )
+  // mark_* は delivering の行にしか効かないため、実フローどおり claim する
+  let assert Ok([queued]) = storage.call_claim_due(store, clock.now_ms(), 10)
   dispatcher.process_one(
     cfg(),
     store,

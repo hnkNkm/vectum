@@ -150,3 +150,23 @@ fn remove_db(path: String) -> Nil {
   let _ = simplifile.delete(path <> "-journal")
   Nil
 }
+
+/// mark_* は delivering の行にしか効かない。succeeded 行を
+/// mark_retry で上書きできないこと(reaper 競合の防御)。
+pub fn mark_retry_does_not_touch_succeeded_row_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-guard")
+  let assert Ok([d]) = storage.accept(conn, ev, ["ci"], 1000, ["g-1"])
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
+  let _ = d
+  let assert Ok(Nil) = storage.mark_success(conn, claimed.id, 1, 1100)
+
+  // succeeded 行への mark_retry / mark_dead は無視される
+  let assert Ok(Nil) =
+    storage.mark_retry(conn, claimed.id, 2, 5000, "late", 1200)
+  let assert Ok(Nil) = storage.mark_dead(conn, claimed.id, 2, "late", 1300)
+
+  // retry_scheduled / dead_letter になっていない(claim も dead 一覧も空)
+  let assert Ok([]) = storage.claim_due(conn, 999_999, 10)
+  let assert Ok([]) = storage.list_dead(conn)
+}
