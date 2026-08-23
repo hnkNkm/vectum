@@ -41,7 +41,11 @@ SIGTERM / SIGINT を受けると次の順で停止する。
 3. 実行中の配送ワーカーの完了を待つ。猶予は既定 10 秒(`VECTUM_SHUTDOWN_GRACE_MS` で変更可)
 4. 猶予を過ぎたら強制終了する。未完了 Delivery は次回起動時の復旧で再開される
 
-仕様が求める「新規受付の停止」「進行中 Storage Transaction の安全な終了」「進行中 Delivery の永続化」を満たす。listen socket の明示 close はせず、503 応答による drain を行う。
+仕様が求める「新規受付の停止」「進行中 Storage Transaction の安全な終了」「進行中 Delivery の永続化」に対応する。listen socket の明示 close はせず、503 応答による drain を行う。停止の最後は `halt(0)` による即終了で、mailbox の drain や SQLite 接続の明示 close はしない。書きかけの更新はジャーナルによりロールバックされ、次回起動時の復旧で再開される。
+
+### 猶予時間とコンテナの stop timeout
+
+既定の 10 秒は `docker stop` や Kubernetes の一般的な猶予(`terminationGracePeriodSeconds`)と同程度。ワーカー完了を確実に待つには `VECTUM_SHUTDOWN_GRACE_MS` を stop timeout より短く設定するか、逆に stop timeout を延長する。猶予内に終わらない配送は強制切断され、起動時復旧で再配送される(at-least-once のため重複は増える)。
 
 ## スケール境界
 

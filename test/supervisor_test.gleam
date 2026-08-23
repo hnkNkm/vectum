@@ -59,8 +59,10 @@ pub fn supervisor_restarts_storage_after_kill_test() {
   let assert Ok(_) = storage.call_ping(restarted)
 }
 
-/// Metrics actor も同様に再起動されること。
+/// Metrics actor も同様に再起動されること。単独実行でも動くよう
+/// 自分で監視木を起動する。
 pub fn supervisor_restarts_metrics_after_kill_test() {
+  let assert Ok(_) = supervisor.start_tree(cfg(), stub_send)
   let assert Ok(m) = registry.get_metrics()
   let assert Ok(pid) = process.subject_owner(m.subject)
   process.kill(pid)

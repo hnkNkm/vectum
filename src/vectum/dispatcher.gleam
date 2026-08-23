@@ -2,6 +2,7 @@ import gleam/crypto
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -21,11 +22,15 @@ const poll_interval_ms = 200
 const reap_interval_ms = 10_000
 
 /// delivering が滞留と見なすまでの時間。
-/// 配送タイムアウトの 2 倍(最低 10 秒)。実行中の配送を誤って
-/// 再開しないためのマージン。
+/// Destination の実効タイムアウト(個別指定、無ければ [delivery].timeout_ms)
+/// の最大値の 2 倍、最低 10 秒。実行中の配送を誤って再開しないためのマージン。
 fn stale_after_ms(config: Config) -> Int {
-  let doubled = config.delivery.timeout_ms * 2
-  int.max(doubled, 10_000)
+  let max_timeout =
+    list.fold(config.destinations, config.delivery.timeout_ms, fn(acc, dest) {
+      let config.HttpDestination(timeout_ms:, ..) = dest
+      int.max(acc, option.unwrap(timeout_ms, config.delivery.timeout_ms))
+    })
+  int.max(max_timeout * 2, 10_000)
 }
 
 type State {

@@ -43,7 +43,7 @@ CREATE TABLE deliveries (
 
 Event 受理と Delivery 作成は同一トランザクション。永続化完了後にのみ `202` を返す。SQLite 接続は Storage actor が直列化する。
 
-起動時は `delivering` を `pending` に戻し、クラッシュ直後の未完了配送を再開する。
+起動時は `delivering` を `pending` に戻し、クラッシュ直後の未完了配送を再開する。この全件復旧はプロセス起動時に一度だけ行う。actor 再起動時には復旧せず、実行中の滞留は reaper が拾う(即時二重送信を避けるため)。
 
 ## 保持期間
 

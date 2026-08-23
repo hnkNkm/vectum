@@ -56,6 +56,14 @@ pub fn validate(path: String) -> Nil {
 pub fn run_server(path: String) -> Nil {
   let parsed = require_config(path)
   shutdown.init()
+  // listen 前にハンドラを入れる。起動直後の SIGTERM も graceful に扱う
+  shutdown.install_handler(shutdown.run_shutdown_sequence)
+  // 全件復旧はプロセス起動時に一度だけ。actor 再起動では reaper に委ねる
+  case storage.open_and_recover(parsed.storage.path, clock.now_ms()) {
+    Ok(_) -> Nil
+    Error(error) ->
+      fail("failed to open storage " <> parsed.storage.path <> ": " <> error)
+  }
   case supervisor.start_tree(parsed, delivery.send_http) {
     Ok(_) -> Nil
     Error(error) -> fail("failed to start services: " <> error)
@@ -66,7 +74,6 @@ pub fn run_server(path: String) -> Nil {
     |> mist.bind(parsed.server.host)
     |> mist.port(parsed.server.port)
     |> mist.start
-  shutdown.install_handler(shutdown.run_shutdown_sequence)
   log.info([
     #("msg", "listening"),
     #("host", parsed.server.host),
