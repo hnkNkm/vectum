@@ -14,6 +14,8 @@ Internet なしで起動、設定、配送、再配送、監視ができる。De
 
 イメージ既定は `examples/docker.toml` を `/config/router.toml` に焼き込む。`storage.path` は `/data/router.db`、listen は `0.0.0.0:8080`。`/app` は root 所有のため、相対パス `./router.db` だと `vectum` ユーザーで書けない。
 
+> 既定設定の Destination は動作確認用のプレースホルダ(`127.0.0.1`)のため、上書きしない限り配送は失敗し dead-letter になる。コンテナを公開するネットワークに置く場合は、必ず Source に HMAC(`hmac_secret_env`)を設定すること。
+
 ```bash
 docker run --rm -p 8080:8080 \
   -v ./data:/data \

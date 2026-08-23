@@ -28,8 +28,8 @@ Transport 非依存の共通 Event Envelope。HTTP Webhook も MQTT Message も�
 
 ## Event Type の決定順
 
-1. Source 設定の `type_header`（HTTP Header）
-2. Source 設定の `type_field`（JSON フィールド）
+1. Source 設定の `type_from_header`（HTTP Header）
+2. Source 設定の `type_from_json`（JSON フィールド）
 3. Source 設定の `type_fixed`
 
 いずれも取れない場合は受理しない。
