@@ -34,3 +34,4 @@ router.db*
 # テスト一時ファイル
 /tmp/
 *.log
+smoke-result.txt
