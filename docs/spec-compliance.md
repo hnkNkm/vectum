@@ -49,12 +49,11 @@
 | 項目 | 仕様 | 実装 |
 | --- | --- | --- |
 | Metadata フィルタ | Source / Type / Data / **Metadata** を条件にできる | フィルタは `event.data` のみ |
-| Source `path` | 設定例にカスタム path | Ingress は `/events/:name` 固定。`find_source_by_path` は未使用 |
+| Source `path` | 設定例にカスタム path | Ingress は `/events/:name` 固定。`path` キーは解析のみで照合には使わない(dead code は削除済み) |
 | メトリクス名 | 候補 `events_accepted_total`、`delivery_latency_seconds` ヒストグラム | `events_received_total` とミリ秒の sum/count |
 | CLI 名 | プレースホルダ `router` | 製品名 `vectum`（意図した差分） |
 | モジュール配置 | 層分けの例 | `src/vectum/*.gleam` に平坦化（仕様も過剰な層は避けるとしている） |
 | Docker マウント | 例 `-v ./router.toml:/app/router.toml` | `/config/router.toml` + `VECTUM_CONFIG`。DB は `/data/router.db` |
-| `dead retry` / `delete` | ID 指定で再配送・削除 | 該当行が無くても成功終了する |
 | `[log]` 設定 | レベル / 形式 | 常に JSON 1 行。設定キーは未読込 |
 | RouteManager プロセス | OTP 上の独立 Process | プロセス内の純関数 |
 

@@ -97,6 +97,7 @@ fn dead_retry(path: String, id: String) -> Nil {
   let parsed = require_config(path)
   let store = require_store(parsed.storage.path)
   case storage.call_retry_dead(store, id, clock.now_ms()) {
+    Ok(0) -> fail("no dead-letter delivery with id " <> id)
     Ok(_) -> io.println("requeued " <> id)
     Error(error) ->
       fail("failed to retry " <> id <> ": " <> string.inspect(error))
@@ -107,6 +108,7 @@ fn dead_delete(path: String, id: String) -> Nil {
   let parsed = require_config(path)
   let store = require_store(parsed.storage.path)
   case storage.call_delete_dead(store, id) {
+    Ok(0) -> fail("no dead-letter delivery with id " <> id)
     Ok(_) -> io.println("deleted " <> id)
     Error(error) ->
       fail("failed to delete " <> id <> ": " <> string.inspect(error))

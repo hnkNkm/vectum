@@ -64,14 +64,14 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   assert dead.last_error == Some("boom")
   let assert Ok(0) = storage.count_pending(conn)
 
-  let assert Ok(Nil) = storage.retry_dead(conn, dead.id, 7000)
+  let assert Ok(1) = storage.retry_dead(conn, dead.id, 7000)
   let assert Ok([]) = storage.list_dead(conn)
   let assert Ok([pending]) = storage.claim_due(conn, 7000, 1)
   assert pending.status == storage.Delivering
   assert pending.attempts == 0
 
   let assert Ok(Nil) = storage.mark_dead(conn, pending.id, 8, "boom", 8000)
-  let assert Ok(Nil) = storage.delete_dead(conn, pending.id)
+  let assert Ok(1) = storage.delete_dead(conn, pending.id)
   let assert Ok([]) = storage.list_dead(conn)
 }
 
@@ -169,4 +169,20 @@ pub fn mark_retry_does_not_touch_succeeded_row_test() {
   // retry_scheduled / dead_letter になっていない(claim も dead 一覧も空)
   let assert Ok([]) = storage.claim_due(conn, 999_999, 10)
   let assert Ok([]) = storage.list_dead(conn)
+}
+
+/// 存在しない / dead_letter 以外の ID への dead 操作は 0 行変更を返す。
+pub fn dead_ops_on_missing_id_return_zero_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-dead-missing")
+  let assert Ok([d]) = storage.accept(conn, ev, ["ci"], 1000, ["dm-1"])
+  let _ = d
+
+  // 未存在 ID
+  let assert Ok(0) = storage.retry_dead(conn, "nope", 2000)
+  let assert Ok(0) = storage.delete_dead(conn, "nope")
+
+  // dead_letter 以外の行(pending)も対象外
+  let assert Ok(0) = storage.retry_dead(conn, "dm-1", 2000)
+  let assert Ok(0) = storage.delete_dead(conn, "dm-1")
 }

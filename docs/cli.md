@@ -30,4 +30,4 @@ v0.1 対象外（将来候補）:
 
 `dead retry` は `attempts` を 0 に戻す。再配送は `[delivery].max_attempts` 分の backoff を最初からやり直す。
 
-`dead retry` / `dead delete` は、該当 ID の `dead_letter` が無くても成功終了する。存在確認のエラー化は未実装。
+`dead retry` / `dead delete` は該当 ID の `dead_letter` が存在しない場合エラー終了する(非 0 終了コード)。
