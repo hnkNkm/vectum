@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- ワーカーが panic しても concurrency 枠を確実に解放するよう変更。枠漏れによる配送停止を防止(#26)
+- Metadata フィルタのキー照合を大小文字非依存に変更(`metadata.X-GitHub-Event` と `metadata.x-github-event` が同義)(#27)
+- spec-compliance の「次に埋めるなら」から `sources.path` を除去し、roadmap.md の v0.2 候補へ移動。#19 の割り切りと表記を整合(#28)
 - ドキュメント修正: event-model.md の Event Type 設定キーを実装(`type_from_header` / `type_from_json`)に一致させた。Docker 既定設定の Destination がプレースホルダであること・公開時は HMAC が必須であることを README / operations.md に追記。メトリクスが再起動でリセットされることを observability.md に明記
 - フィルタに `metadata.<key>` プレフィックスを追加。HTTP ヘッダ由来の Metadata を条件に振り分けできるようになった(例: `path = "metadata.x-github-event"`)。仕様の Field Filtering を満たす
 - `vectum dead retry` / `dead delete` で該当 ID の `dead_letter` が存在しない場合にエラー終了するようにした(以前は無関係でも成功扱い)

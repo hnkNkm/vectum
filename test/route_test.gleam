@@ -147,3 +147,25 @@ pub fn metadata_filter_does_not_leak_into_data_test() {
     )
   assert route.matches_route(meta_route(filter.Eq, event.String("push")), e)
 }
+
+pub fn metadata_filter_key_is_case_insensitive_test() {
+  let e = meta_ev([#("x-github-event", "push")])
+
+  // ヘッダ名慣習の大小文字でも同じキーにマッチする(#27)
+  let upper =
+    Route(
+      name: "u",
+      source: "github",
+      event: "*",
+      destinations: ["out"],
+      filters: [
+        Filter(
+          path: "metadata.X-GitHub-Event",
+          op: filter.Eq,
+          value: event.String("push"),
+        ),
+      ],
+    )
+  assert route.matches_route(upper, e)
+  assert route.matches_route(meta_route(filter.Eq, event.String("push")), e)
+}

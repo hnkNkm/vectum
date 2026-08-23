@@ -65,4 +65,4 @@ op = "eq"
 value = "push"
 ```
 
-プレフィックスがない場合は従来どおり Data の dotted path を解釈する。Metadata の値は文字列として比較する。
+プレフィックスがない場合は従来どおり Data の dotted path を解釈する。Metadata のキーは大小文字を区別しない(`X-GitHub-Event` と `x-github-event` は同じヘッダにマッチ)。値は文字列として比較する。

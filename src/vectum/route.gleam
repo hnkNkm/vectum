@@ -41,7 +41,12 @@ pub fn matches_route(route: Route, event: Event) -> Bool {
 fn lookup_value(event: Event, path: String) -> Result(event.EventValue, Nil) {
   case string.starts_with(path, "metadata.") {
     True -> {
-      let key = string.drop_start(path, string.length("metadata."))
+      // Metadata のキーは受信時に小文字化されるため、照合側でも揃える。
+      // ヘッダ名慣習(X-GitHub-Event)どおりに書いても一致する。
+      let key =
+        path
+        |> string.drop_start(string.length("metadata."))
+        |> string.lowercase
       dict.get(event.metadata, key)
       |> result.map(event.String)
     }

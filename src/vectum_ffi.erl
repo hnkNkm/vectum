@@ -7,6 +7,7 @@
     worker_finished/0,
     active_worker_count/0,
     install_shutdown_handler/1,
+    run_guarded/2,
     registry_put_store/1,
     registry_get_store/0,
     registry_put_metrics/1,
@@ -70,6 +71,15 @@ install_shutdown_handler(Fun) ->
     ok = gen_event:add_handler(erl_signal_server, vectum_signal_handler, [Fun]),
     _ = os:set_signal(sigterm, handle),
     _ = catch os:set_signal(sigint, handle),
+    nil.
+
+%% ワーカー枠の解放を panic でも保証するためのガード(vectum/dispatcher.gleam)。
+%% Fun() を実行し、例外の有無に関わらず必ず After() を呼ぶ。
+run_guarded(Fun, After) ->
+    try Fun()
+    catch _:_ -> ok
+    end,
+    After(),
     nil.
 
 %% ------------------------------------------------------------------

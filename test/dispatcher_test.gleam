@@ -143,3 +143,37 @@ fn wait_until(cond: fn() -> Bool, timeout_ms: Int) -> Nil {
     }
   }
 }
+
+/// ワーカーが panic しても枠は解放され、次 tick で claimできること(#26)。
+/// ワーカーが panic しても枠は解放され、以降も claim を続けられること(#26)。
+pub fn panicked_worker_releases_slot_test() {
+  let baseline = shutdown.active_workers()
+  let assert Ok(parsed) = config.parse_with(cap_toml, fn(_) { Error(Nil) })
+  let assert Ok(store) = storage.start(":memory:")
+  let assert Ok(m) = metrics.start()
+  let ev =
+    Event(
+      id: "evt-panic",
+      source: "internal",
+      event_type: "ping",
+      timestamp: clock.now_rfc3339(),
+      data: event.Null,
+      metadata: dict.new(),
+    )
+  let assert Ok([_, _, _]) =
+    storage.call_accept(store, ev, ["a", "b", "c"], clock.now_ms(), [
+      "panic-1", "panic-2", "panic-3",
+    ])
+
+  // send が panic するワーカーでも枠を解放する(guarded 実行)
+  let assert Ok(2) =
+    dispatcher.tick(parsed, store, m, fn(_outgoing) { panic as "boom" })
+  assert shutdown.active_workers() == baseline + 2
+  wait_until(fn() { shutdown.active_workers() == baseline }, 2000)
+
+  // 枠が戻っているため、残り 1 件を通常どおり処理できる
+  let assert Ok(1) =
+    dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(200) })
+  wait_until(fn() { metrics.snapshot(m).deliveries_success == 1 }, 3000)
+  assert shutdown.active_workers() == baseline
+}
