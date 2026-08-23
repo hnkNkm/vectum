@@ -59,7 +59,7 @@ Destination 単位の Supervisor ではなく、共有 worker pool + SQLite clai
 
 ある worker のクラッシュは他 Destination の claim を止めない。Storage / Metrics / Dispatcher が落ちた場合は Supervisor が再起動する(既定の許容は 5 秒あたり 10 回)。超過すると Supervisor 自身が終了するためプロセス全体が停止する(単一ノード前提)。
 
-起動時は `delivering` 状態の Delivery を `pending` に戻し、未完了配送を再開する。
+プロセス起動時は `delivering` を `pending` に戻し、未完了配送を再開する。この全件復旧は起動時に一度だけ行う。Storage actor の再起動では復旧せず、滞留は reaper が拾う。
 
 ## 実装モジュール
 
