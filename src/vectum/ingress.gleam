@@ -79,6 +79,24 @@ fn read_and_persist(
   source: String,
   req: Request(Connection),
 ) -> Response(ResponseData) {
+  // mist.read_body は content-length 欠落時 0 とみなすため、chunked は
+  // 上限チェックをすり抜けて無制限に読まれる。ここで明示的に拒否する
+  case request.get_header(req, "transfer-encoding") {
+    Ok(_) -> {
+      metrics.record_rejected(metrics)
+      json_error(413, "chunked transfer-encoding is not supported")
+    }
+    Error(_) -> read_body(config, store, metrics, source, req)
+  }
+}
+
+fn read_body(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  source: String,
+  req: Request(Connection),
+) -> Response(ResponseData) {
   case mist.read_body(req, config.server.max_body_bytes) {
     Error(mist.ExcessBody) -> {
       metrics.record_rejected(metrics)

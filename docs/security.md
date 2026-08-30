@@ -25,6 +25,8 @@ Destination への HTTPS は gleam_httpc の TLS で送る。Ingress の TLS 終
 
 既定は 1 MiB。超過は `413`。`[server].max_body_bytes` で変更できる。
 
+`Transfer-Encoding: chunked` は Content-Length が無くサイズ上限を適用できないため、サイズに関係なく `413` で拒否する。Webhook 送信側は Content-Length 付きで送ること。
+
 ## 認証モデル
 
 v0.1 の Source 認証は HMAC の有無だけ。`hmac_secret` / `hmac_secret_env` が無ければ検証しない。mTLS、Bearer、IP allowlist は将来候補。
