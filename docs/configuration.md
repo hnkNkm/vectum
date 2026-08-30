@@ -59,4 +59,6 @@ concurrency = 8
 - Destination URL が http(s) であること
 - timeout / retry が正の値であること
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）
+- HMAC secret が空文字・空白のみでないこと。`hmac_secret` と `hmac_secret_env` の同時指定も不可
+- `hmac_header` が空でないこと
 - Destination `type` が `http` であること

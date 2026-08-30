@@ -384,10 +384,19 @@ fn resolve_secret(
 ) -> Result(Option(String), List(String)) {
   use inline <- result.try(opt_string_opt(table, ["hmac_secret"]))
   use env_name <- result.try(opt_string_opt(table, ["hmac_secret_env"]))
-  case env_name {
-    Some(var) ->
+  case inline, env_name {
+    // 同時指定は実装ごとに優先順位が揺れる余地を残すより、設定エラーにする
+    Some(_), Some(_) ->
+      Error([
+        kind
+        <> " "
+        <> name
+        <> " sets both hmac_secret and hmac_secret_env; use only one",
+      ])
+    Some(value), None -> check_secret(kind, name, value)
+    None, Some(var) ->
       case getenv(var) {
-        Ok(value) -> Ok(Some(value))
+        Ok(value) -> check_secret(kind, name, value)
         Error(_) ->
           Error([
             kind
@@ -397,7 +406,18 @@ fn resolve_secret(
             <> var,
           ])
       }
-    None -> Ok(inline)
+    None, None -> Ok(None)
+  }
+}
+
+fn check_secret(
+  kind: String,
+  name: String,
+  value: String,
+) -> Result(Option(String), List(String)) {
+  case string.trim(value) == "" {
+    True -> Error([kind <> " " <> name <> " has an empty hmac_secret"])
+    False -> Ok(Some(value))
   }
 }
 
@@ -458,13 +478,32 @@ fn validate_delivery(policy: Policy, concurrency: Int) -> List(String) {
 }
 
 fn validate_source(source: Source) -> List(String) {
-  case source.type_from_header, source.type_from_json, source.type_fixed {
+  let type_errors = case
+    source.type_from_header,
+    source.type_from_json,
+    source.type_fixed
+  {
     None, None, None -> [
       "source "
       <> source.name
       <> " must set type_from_header, type_from_json, or type_fixed",
     ]
     _, _, _ -> []
+  }
+  list.append(
+    type_errors,
+    validate_hmac_header(source.name, "source", source.hmac_header),
+  )
+}
+
+fn validate_hmac_header(
+  name: String,
+  kind: String,
+  header: String,
+) -> List(String) {
+  case string.trim(header) == "" {
+    True -> [kind <> " " <> name <> " hmac_header must not be empty"]
+    False -> []
   }
 }
 
@@ -489,7 +528,9 @@ fn validate_destination(destination: Destination) -> List(String) {
     Some(ms) if ms >= 1 -> []
     Some(_) -> ["destination " <> name <> " timeout_ms must be >= 1"]
   }
-  list.append(url_errors, timeout_errors)
+  let header_errors =
+    validate_hmac_header(name, "destination", destination.hmac_header)
+  list.append(url_errors, list.append(timeout_errors, header_errors))
 }
 
 fn validate_route(

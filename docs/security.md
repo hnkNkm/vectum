@@ -8,7 +8,7 @@ Source 受信と Destination 配送の両方で HMAC-SHA256 を使える。
 X-Hub-Signature-256: sha256=<hex>
 ```
 
-比較は定数時間。設定は `hmac_secret` または `hmac_secret_env`。秘密を TOML に直書きせず環境変数を使うことを推奨する。`hmac_secret_env` が指す変数が無いと `validate` / `run` は失敗する。
+比較は定数時間。設定は `hmac_secret` または `hmac_secret_env`。秘密を TOML に直書きせず環境変数を使うことを推奨する。`hmac_secret_env` が指す変数が無い、または値が空だと `validate` / `run` は失敗する。空文字・空白のみの `hmac_secret` も設定エラーになる。`hmac_secret` と `hmac_secret_env` の同時指定はエラー。空の `hmac_header` も設定エラーになる。
 
 | 用途 | 既定ヘッダ |
 | --- | --- |

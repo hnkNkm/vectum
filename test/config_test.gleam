@@ -244,6 +244,97 @@ url = \"http://127.0.0.1/x\"
   assert list.any(messages, fn(m) { string.contains(m, "max_attempts") })
 }
 
+pub fn empty_inline_secret_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "empty hmac_secret") })
+}
+
+pub fn blank_inline_secret_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"   \"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "empty hmac_secret") })
+}
+
+pub fn empty_env_secret_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret_env = \"EMPTY_SECRET\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, fn(name) {
+      case name {
+        "EMPTY_SECRET" -> Ok("")
+        _ -> Error(Nil)
+      }
+    })
+  assert list.any(messages, fn(m) { string.contains(m, "empty hmac_secret") })
+}
+
+pub fn both_secret_kinds_are_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"inline\"
+hmac_secret_env = \"AUDIT_SECRET\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "both hmac_secret and hmac_secret_env")
+  })
+}
+
+pub fn empty_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"sec\"
+hmac_header = \"\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "hmac_header must not be empty")
+  })
+}
+
 pub fn example_config_requires_env_test() {
   let assert Error(config.ConfigError(messages)) =
     config.load_with("examples/router.toml", fn(_) { Error(Nil) })
