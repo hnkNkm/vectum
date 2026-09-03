@@ -23,7 +23,10 @@ Destination への HTTPS は gleam_httpc の TLS で送る。Ingress の TLS 終
 
 ## Payload 上限
 
-既定は 1 MiB。超過は `413`。`[server].max_body_bytes` で変更できる。
+既定は 1 MiB。`Content-Length` が `[server].max_body_bytes` を超えると `413`。
+`Transfer-Encoding` に `chunked` を含むリクエストはボディ読み取り前に `413` で拒否する。
+mist 6 の `read_body` は `Content-Length` 無しを 0 とみなし chunked を無制限に読むため、
+上限チェックの迂回とメモリ枯渇を防ぐ措置。`[server].max_body_bytes` で上限を変更できる。
 
 ## 認証モデル
 

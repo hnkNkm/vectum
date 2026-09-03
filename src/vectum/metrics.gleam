@@ -84,8 +84,32 @@ pub fn record_reaped(metrics: Metrics, count: Int) -> Nil {
   process.send(metrics.subject, Reaped(count))
 }
 
-pub fn snapshot(metrics: Metrics) -> Snapshot {
-  process.call(metrics.subject, 1000, Read)
+/// process.call は応答なし・先方死で panic するため、監視付き select で待つ。
+/// 輸送失敗は Error にして返し、呼出側(/metrics・監視木)は落とさない。
+type CallOutcome {
+  CallReply(Snapshot)
+  CalleeDown
+}
+
+pub fn snapshot(metrics: Metrics) -> Result(Snapshot, Nil) {
+  let reply_subject = process.new_subject()
+  case process.subject_owner(metrics.subject) {
+    Error(_) -> Error(Nil)
+    Ok(callee) -> {
+      let monitor = process.monitor(callee)
+      process.send(metrics.subject, Read(reply_subject))
+      let selector =
+        process.new_selector()
+        |> process.select_map(reply_subject, CallReply)
+        |> process.select_specific_monitor(monitor, fn(_) { CalleeDown })
+      let outcome = process.selector_receive(selector, 1000)
+      process.demonitor_process(monitor)
+      case outcome {
+        Ok(CallReply(snap)) -> Ok(snap)
+        _ -> Error(Nil)
+      }
+    }
+  }
 }
 
 pub fn prometheus(snapshot: Snapshot, pending: Int) -> String {

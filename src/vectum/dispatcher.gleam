@@ -77,7 +77,7 @@ pub fn start_supervised(
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
     Tick -> {
-      case registry.get_store(), registry.get_metrics() {
+      case registry.get_store_alive(), registry.get_metrics_alive() {
         Ok(store), Ok(metrics) -> {
           case tick(state.config, store, metrics, state.send) {
             Ok(_) -> Nil
@@ -145,15 +145,27 @@ pub fn tick(
             list.each(due, fn(item) {
               // claim と同時に枠を予約する。次の tick が読む前に確定させる
               shutdown.worker_started()
-              process.spawn(fn() {
-                run_guarded(
-                  fn() {
-                    let _ =
-                      process_one_inner(config, store, metrics, send, item)
-                    Nil
-                  },
-                  fn() { shutdown.worker_finished() },
-                )
+              // spawn_unlinked: Dispatcher が死んでもワーカーは殺さない。
+              // 枠解放は run_guarded が panic 時も保証する。
+              process.spawn_unlinked(fn() {
+                let completed =
+                  run_guarded(
+                    fn() {
+                      let _ =
+                        process_one_inner(config, store, metrics, send, item)
+                      Nil
+                    },
+                    fn() { shutdown.worker_finished() },
+                  )
+                case completed {
+                  True -> Nil
+                  False ->
+                    log.error([
+                      #("msg", "delivery_worker_panic"),
+                      #("delivery_id", item.id),
+                      #("destination", item.destination),
+                    ])
+                }
               })
               Nil
             })

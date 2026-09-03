@@ -87,6 +87,8 @@ pub type Message {
 const schema = "
 pragma foreign_keys = on;
 pragma busy_timeout = 5000;
+pragma journal_mode = wal;
+pragma synchronous = normal;
 
 create table if not exists events (
   id text primary key,
@@ -163,8 +165,13 @@ pub fn accept(
   let result = insert_accepted(conn, event, unique, now_ms, delivery_ids)
   case result {
     Ok(deliveries) -> {
-      use _ <- result.try(sqlight.exec("commit", conn))
-      Ok(deliveries)
+      case sqlight.exec("commit", conn) {
+        Ok(_) -> Ok(deliveries)
+        Error(error) -> {
+          let _ = sqlight.exec("rollback", conn)
+          Error(error)
+        }
+      }
     }
     Error(error) -> {
       let _ = sqlight.exec("rollback", conn)
@@ -196,7 +203,8 @@ fn insert_accepted(
     expecting: decode.success(Nil),
   ))
 
-  list.zip(destinations, pad_ids(delivery_ids, list.length(destinations)))
+  use ids <- result.try(pad_ids(delivery_ids, list.length(destinations)))
+  list.zip(destinations, ids)
   |> list.try_map(fn(pair) {
     let #(destination, delivery_id) = pair
     let delivery =
@@ -244,11 +252,19 @@ fn unique_keep_order(names: List(String)) -> List(String) {
   unique
 }
 
-fn pad_ids(ids: List(String), needed: Int) -> List(String) {
+fn pad_ids(
+  ids: List(String),
+  needed: Int,
+) -> Result(List(String), sqlight.Error) {
   let have = list.length(ids)
   case have >= needed {
-    True -> list.take(ids, needed)
-    False -> list.append(ids, list.repeat("missing-id", needed - have))
+    True -> Ok(list.take(ids, needed))
+    False ->
+      Error(sqlight.SqlightError(
+        sqlight.Misuse,
+        "delivery_ids shorter than destinations",
+        -1,
+      ))
   }
 }
 
@@ -274,28 +290,21 @@ pub fn claim_due(
   now_ms: Int,
   limit: Int,
 ) -> Result(List(Delivery), sqlight.Error) {
-  use due <- result.try(sqlight.query(
-    "select id, event_id, destination, status, attempts, next_attempt_at,
-            last_attempt_at, last_error, created_at, updated_at
-     from deliveries
-     where status in ('pending', 'retry_scheduled')
-       and next_attempt_at <= ?
-     order by next_attempt_at
-     limit ?",
+  sqlight.query(
+    "update deliveries set status = 'delivering', updated_at = ?
+     where id in (
+       select id from deliveries
+       where status in ('pending', 'retry_scheduled')
+         and next_attempt_at <= ?
+       order by next_attempt_at
+       limit ?
+     )
+     returning id, event_id, destination, status, attempts, next_attempt_at,
+            last_attempt_at, last_error, created_at, updated_at",
     on: conn,
-    with: [sqlight.int(now_ms), sqlight.int(limit)],
+    with: [sqlight.int(now_ms), sqlight.int(now_ms), sqlight.int(limit)],
     expecting: delivery_decoder(),
-  ))
-  list.try_map(due, fn(delivery) {
-    use _ <- result.try(sqlight.query(
-      "update deliveries set status = 'delivering', updated_at = ?
-       where id = ?",
-      on: conn,
-      with: [sqlight.int(now_ms), sqlight.text(delivery.id)],
-      expecting: decode.success(Nil),
-    ))
-    Ok(Delivery(..delivery, status: Delivering, updated_at: now_ms))
-  })
+  )
 }
 
 /// delivering の行にだけ効く。戻り値は更新件数。
@@ -535,6 +544,55 @@ pub fn start_supervised(
   |> actor.start
 }
 
+/// process.call は応答なし・先方死で panic するため、監視付き select で待つ。
+/// 輸送失敗(timeout / 先方死 / owner 不在)は sqlight.Error に畳んで返す。
+/// 呼出側は Error を通常の失敗として扱い、panic しない。
+type CallOutcome(a) {
+  CallReply(a)
+  CalleeDown
+}
+
+fn try_call(
+  subject: Subject(Message),
+  timeout: Int,
+  make_request: fn(Subject(Result(t, sqlight.Error))) -> Message,
+) -> Result(t, sqlight.Error) {
+  let reply_subject = process.new_subject()
+  case process.subject_owner(subject) {
+    Error(_) ->
+      Error(sqlight.SqlightError(
+        sqlight.GenericError,
+        "storage callee has no owner",
+        -1,
+      ))
+    Ok(callee) -> {
+      let monitor = process.monitor(callee)
+      process.send(subject, make_request(reply_subject))
+      let selector =
+        process.new_selector()
+        |> process.select_map(reply_subject, CallReply)
+        |> process.select_specific_monitor(monitor, fn(_) { CalleeDown })
+      let outcome = process.selector_receive(selector, timeout)
+      process.demonitor_process(monitor)
+      case outcome {
+        Ok(CallReply(inner)) -> inner
+        Ok(CalleeDown) ->
+          Error(sqlight.SqlightError(
+            sqlight.Interrupt,
+            "storage callee exited",
+            -1,
+          ))
+        Error(_) ->
+          Error(sqlight.SqlightError(
+            sqlight.BusyTimeout,
+            "storage call timeout",
+            -1,
+          ))
+      }
+    }
+  }
+}
+
 pub fn call_accept(
   store: Store,
   event: Event,
@@ -542,7 +600,7 @@ pub fn call_accept(
   now_ms: Int,
   delivery_ids: List(String),
 ) -> Result(List(Delivery), sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
+  try_call(store.subject, 5000, fn(reply) {
     Accept(reply:, event:, destinations:, now_ms:, delivery_ids:)
   })
 }
@@ -551,7 +609,7 @@ pub fn call_get_event(
   store: Store,
   id: String,
 ) -> Result(Event, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) { GetEvent(reply:, id:) })
+  try_call(store.subject, 5000, fn(reply) { GetEvent(reply:, id:) })
 }
 
 pub fn call_claim_due(
@@ -559,9 +617,7 @@ pub fn call_claim_due(
   now_ms: Int,
   limit: Int,
 ) -> Result(List(Delivery), sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
-    ClaimDue(reply:, now_ms:, limit:)
-  })
+  try_call(store.subject, 5000, fn(reply) { ClaimDue(reply:, now_ms:, limit:) })
 }
 
 pub fn call_mark_success(
@@ -570,7 +626,7 @@ pub fn call_mark_success(
   attempts: Int,
   now_ms: Int,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
+  try_call(store.subject, 5000, fn(reply) {
     MarkSuccess(reply:, id:, attempts:, now_ms:)
   })
 }
@@ -583,7 +639,7 @@ pub fn call_mark_retry(
   error: String,
   now_ms: Int,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
+  try_call(store.subject, 5000, fn(reply) {
     MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:)
   })
 }
@@ -595,7 +651,7 @@ pub fn call_mark_dead(
   error: String,
   now_ms: Int,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
+  try_call(store.subject, 5000, fn(reply) {
     MarkDead(reply:, id:, attempts:, error:, now_ms:)
   })
 }
@@ -605,13 +661,13 @@ pub fn call_reap_stale(
   cutoff_ms: Int,
   now_ms: Int,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
+  try_call(store.subject, 5000, fn(reply) {
     ReapStale(reply:, cutoff_ms:, now_ms:)
   })
 }
 
 pub fn call_list_dead(store: Store) -> Result(List(Delivery), sqlight.Error) {
-  process.call(store.subject, 5000, ListDead)
+  try_call(store.subject, 5000, ListDead)
 }
 
 pub fn call_retry_dead(
@@ -619,24 +675,22 @@ pub fn call_retry_dead(
   id: String,
   now_ms: Int,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) {
-    RetryDead(reply:, id:, now_ms:)
-  })
+  try_call(store.subject, 5000, fn(reply) { RetryDead(reply:, id:, now_ms:) })
 }
 
 pub fn call_delete_dead(
   store: Store,
   id: String,
 ) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, fn(reply) { DeleteDead(reply:, id:) })
+  try_call(store.subject, 5000, fn(reply) { DeleteDead(reply:, id:) })
 }
 
 pub fn call_pending_count(store: Store) -> Result(Int, sqlight.Error) {
-  process.call(store.subject, 5000, PendingCount)
+  try_call(store.subject, 5000, PendingCount)
 }
 
 pub fn call_ping(store: Store) -> Result(Nil, sqlight.Error) {
-  process.call(store.subject, 5000, Ping)
+  try_call(store.subject, 5000, Ping)
 }
 
 fn handle(
@@ -688,18 +742,31 @@ fn event_row_decoder() -> decode.Decoder(Event) {
   use timestamp <- decode.field(3, decode.string)
   use payload <- decode.field(4, decode.string)
   use metadata_raw <- decode.field(5, decode.string)
-  let data = case event.parse_json(payload) {
-    Ok(value) -> value
-    Error(_) -> event.Null
-  }
-  let metadata = decode_metadata(metadata_raw)
-  decode.success(Event(id:, source:, event_type:, timestamp:, data:, metadata:))
-}
-
-fn decode_metadata(raw: String) -> Dict(String, String) {
-  case json.parse(raw, decode.dict(decode.string, decode.string)) {
-    Ok(metadata) -> metadata
-    Error(_) -> dict.new()
+  case
+    event.parse_json(payload),
+    json.parse(metadata_raw, decode.dict(decode.string, decode.string))
+  {
+    Ok(data), Ok(metadata) ->
+      decode.success(Event(
+        id:,
+        source:,
+        event_type:,
+        timestamp:,
+        data:,
+        metadata:,
+      ))
+    _, _ ->
+      decode.failure(
+        Event(
+          id:,
+          source:,
+          event_type:,
+          timestamp:,
+          data: event.Null,
+          metadata: dict.new(),
+        ),
+        expected: "valid event payload and metadata JSON",
+      )
   }
 }
 

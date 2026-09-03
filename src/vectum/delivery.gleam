@@ -96,7 +96,8 @@ pub fn send_http(outgoing: Outgoing) -> SendResult {
       case httpc.dispatch(config, req) {
         Ok(response) -> Status(response.status)
         Error(httpc.ResponseTimeout) -> TimedOut
-        Error(httpc.FailedToConnect(..)) -> ConnectFailed("connection error")
+        Error(httpc.FailedToConnect(..) as failed) ->
+          ConnectFailed(string.inspect(failed))
         Error(other) -> ConnectFailed(string.inspect(other))
       }
     }
