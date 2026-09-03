@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `delivery_latency_seconds` ヒストグラムを追加。配送レイテンシを `_bucket{le=…}` / `_sum` / `_count` で公開する(境界 5 ms〜10 s の固定 11 点 + `+Inf`)。`delivery_latency_milliseconds_sum` / `_count` は後方互換のため維持(#42)
 - ワーカーが panic しても concurrency 枠を確実に解放するよう変更。枠漏れによる配送停止を防止(#26)
 - Metadata フィルタのキー照合を大小文字非依存に変更(`metadata.X-GitHub-Event` と `metadata.x-github-event` が同義)(#27)
 - spec-compliance の「次に埋めるなら」から `sources.path` を除去し、roadmap.md の v0.2 候補へ移動。#19 の割り切りと表記を整合(#28)

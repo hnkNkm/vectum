@@ -34,9 +34,16 @@
 | `deliveries_reaped_total` | counter | 滞留 delivering の再開数(reaper) |
 | `delivery_latency_milliseconds_sum` | counter | 配送レイテンシ合計（ミリ秒） |
 | `delivery_latency_milliseconds_count` | counter | レイテンシ件数 |
+| `delivery_latency_seconds` | histogram | 配送レイテンシ(秒)。`_bucket{le="…"}`(累積) / `_sum` / `_count`。境界はミリ秒で 5 / 10 / 25 / 50 / 100 / 250 / 500 / 1000 / 2500 / 5000 / 10000 + `+Inf`(#42) |
 | `pending_deliveries` | gauge | 未完了 Delivery |
 
-仕様ドラフトの候補名は `delivery_latency_seconds` ヒストグラムと `events_accepted_total` だった。v0.1 は上記の名前で sum/count から平均を出せる形にしている。
+仕様ドラフトの候補名は `delivery_latency_seconds` ヒストグラムと `events_accepted_total` だった。`delivery_latency_seconds` ヒストグラムを実装し(#42)、ミリ秒の sum/count は後方互換のため残している。
+
+p95 は `histogram_quantile` で出せる:
+
+```promql
+histogram_quantile(0.95, sum(rate(delivery_latency_seconds_bucket[5m])) by (le))
+```
 
 ## Health
 
