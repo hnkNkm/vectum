@@ -40,10 +40,21 @@ SIGTERM / SIGINT を受けると次の順で停止する。
 
 1. 受付停止フラグを立てる。`POST /events` と `GET /ready` は `503` を返し、LB による drain が可能
 2. dispatcher は新しい Delivery の claim を止める
-3. 実行中の配送ワーカーの完了を待つ。猶予は既定 10 秒(`VECTUM_SHUTDOWN_GRACE_MS` で変更可)
+3. 実行中の配送ワーカーと in-flight POST 受付の完了を待つ。猶予は既定 10 秒(`VECTUM_SHUTDOWN_GRACE_MS` で変更可)
 4. 猶予を過ぎたら強制終了する。未完了 Delivery は次回起動時の復旧で再開される
 
-仕様が求める「新規受付の停止」「進行中 Storage Transaction の安全な終了」「進行中 Delivery の永続化」に対応する。listen socket の明示 close はせず、503 応答による drain を行う。停止の最後は `halt(0)` による即終了で、mailbox の drain や SQLite 接続の明示 close はしない。書きかけの更新はジャーナルによりロールバックされ、次回起動時の復旧で再開される。
+in-flight の `POST /events` は受付時に数えられ、猶予内なら `call_accept` の commit まで待つ。猶予を過ぎた受付は中断され、書きかけの更新はジャーナルによりロールバックされ、次回起動時の復旧で再開される。
+
+listen socket の明示 close はせず 503 応答で drain し、最後は `halt(0)` で即終了する。mailbox の drain や SQLite 接続の明示 close はしない。
+
+### ヘルスチェックの使い分け
+
+| Endpoint | 意味 | shutdown 中 |
+| --- | --- | --- |
+| `GET /health` | liveness。プロセスが生きていることだけを見る | `200` のまま |
+| `GET /ready` | readiness。受付・DB 応答が可能なこと | `503`(受付停止フラグまたは DB 無応答) |
+
+LB や orchestrator は `/ready` を drain・再起動判定に使い、`/health` の失敗だけを異常終了の合図にする。
 
 ### 猶予時間とコンテナの stop timeout
 

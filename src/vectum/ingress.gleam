@@ -68,7 +68,12 @@ fn post_event(
 ) -> Response(ResponseData) {
   case shutdown.is_shutting_down() {
     True -> json_error(503, "shutting down")
-    False -> read_and_persist(config, store, metrics, source, req)
+    // 受付後は guard で数え、shutdown 側が猶予内に完了を待てるようにする。
+    // panic 時も枠は返し、例外は再送出して振る舞いを変えない。
+    False ->
+      shutdown.with_accept_guard(fn() {
+        read_and_persist(config, store, metrics, source, req)
+      })
   }
 }
 
@@ -124,7 +129,7 @@ fn read_body_with_limit(
           let content_type =
             request.get_header(req, "content-type")
             |> result.unwrap("")
-          persist_event(
+          persist_admitted(
             config,
             store,
             metrics,
@@ -150,55 +155,78 @@ pub fn persist_event(
   case shutdown.is_shutting_down() {
     True -> json_error(503, "shutting down")
     False ->
+      persist_admitted(
+        config,
+        store,
+        metrics,
+        source,
+        content_type,
+        headers,
+        body,
+      )
+  }
+}
+
+/// 受付済み in-flight の永続化。停止フラグを再確認しない。
+/// HTTP 経路(post_event の guard 内)専用で、猶予内の commit を保証する。
+/// 直接呼ぶ場合は persist_event を使うこと。
+pub fn persist_admitted(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  source: String,
+  content_type: String,
+  headers: List(#(String, String)),
+  body: String,
+) -> Response(ResponseData) {
+  case
+    accept.normalize(
+      config,
+      source,
+      content_type,
+      headers,
+      body,
+      clock.now_rfc3339(),
+      id.event_id(),
+    )
+  {
+    Error(accept.Reject(status, reason)) -> {
+      metrics.record_rejected(metrics)
+      log.error([
+        #("msg", "event_rejected"),
+        #("source", source),
+        #("reason", reason),
+        #("status", int.to_string(status)),
+      ])
+      json_error(status, reason)
+    }
+    Ok(accept.Accepted(event:, destinations:)) -> {
+      let ids = list_ids(destinations)
       case
-        accept.normalize(
-          config,
-          source,
-          content_type,
-          headers,
-          body,
-          clock.now_rfc3339(),
-          id.event_id(),
-        )
+        storage.call_accept(store, event, destinations, clock.now_ms(), ids)
       {
-        Error(accept.Reject(status, reason)) -> {
+        Error(error) -> {
           metrics.record_rejected(metrics)
           log.error([
-            #("msg", "event_rejected"),
+            #("msg", "persist_failed"),
             #("source", source),
-            #("reason", reason),
-            #("status", int.to_string(status)),
+            #("error", string.inspect(error)),
           ])
-          json_error(status, reason)
+          json_error(500, "persist failed")
         }
-        Ok(accept.Accepted(event:, destinations:)) -> {
-          let ids = list_ids(destinations)
-          case
-            storage.call_accept(store, event, destinations, clock.now_ms(), ids)
-          {
-            Error(error) -> {
-              metrics.record_rejected(metrics)
-              log.error([
-                #("msg", "persist_failed"),
-                #("source", source),
-                #("error", string.inspect(error)),
-              ])
-              json_error(500, "persist failed")
-            }
-            Ok(deliveries) -> {
-              metrics.record_received(metrics)
-              log.info([
-                #("msg", "event_accepted"),
-                #("event_id", event.id),
-                #("source", event.source),
-                #("event_type", event.event_type),
-                #("deliveries", int.to_string(list.length(deliveries))),
-              ])
-              accepted(event.id, list.length(deliveries))
-            }
-          }
+        Ok(deliveries) -> {
+          metrics.record_received(metrics)
+          log.info([
+            #("msg", "event_accepted"),
+            #("event_id", event.id),
+            #("source", event.source),
+            #("event_type", event.event_type),
+            #("deliveries", int.to_string(list.length(deliveries))),
+          ])
+          accepted(event.id, list.length(deliveries))
         }
       }
+    }
   }
 }
 

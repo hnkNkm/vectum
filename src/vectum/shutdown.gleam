@@ -1,7 +1,7 @@
 //// Graceful shutdown の調整。
 ////
 //// - 受付停止フラグ(persistent_term):Ingress と dispatcher が参照する
-//// - 実行中配送ワーカーのカウンタ:終了時に完了を待つために使う
+//// - 実行中配送ワーカー / in-flight POST 受付のカウンタ:終了時に完了を待つために使う
 //// - SIGTERM / SIGINT ハンドラのインストール
 ////
 //// ワーカーが panic してカウンタを減らし忘れた場合でも、猶予時間で打ち切り
@@ -24,14 +24,25 @@ pub fn worker_started() -> Nil
 @external(erlang, "vectum_ffi", "worker_finished")
 pub fn worker_finished() -> Nil
 
+/// 実行中の配送ワーカー数。
 @external(erlang, "vectum_ffi", "active_worker_count")
 pub fn active_workers() -> Int
+
+/// 実行中の POST 受付数(read_and_persist 実行中)。
+@external(erlang, "vectum_ffi", "active_accept_count")
+pub fn active_accepts() -> Int
+
+/// POST 受付全体を数えるガード。終了・panic のいずれでも枠を返す。
+/// 例外は再送出するため振る舞いは変わらない。
+@external(erlang, "vectum_ffi", "with_accept_guard")
+pub fn with_accept_guard(body: fn() -> a) -> a
 
 /// カウンタの参照を起動時に一本化しておく。
 /// 初回アクセスが複数プロセスから同時に起こると参照が分裂し得るため、
 /// run_server 冒頭で必ず呼ぶ。
 pub fn init() -> Nil {
   let _ = active_workers()
+  let _ = active_accepts()
   Nil
 }
 
@@ -68,7 +79,7 @@ pub fn grace_ms() -> Int {
 /// シグナル受信時の停止シーケンス。
 ///
 /// 1. 受付停止フラグを立てる(Ingress は 503、dispatcher は新規 claim を止める)
-/// 2. 実行中ワーカーの完了を猶予時間内で待つ
+/// 2. 実行中ワーカーと in-flight POST 受付の完了を猶予時間内で待つ
 /// 3. プロセス全体を正常終了させる
 pub fn run_shutdown_sequence() -> Nil {
   set_shutting_down(True)
@@ -76,19 +87,24 @@ pub fn run_shutdown_sequence() -> Nil {
     #("msg", "shutdown_started"),
     #("grace_ms", int.to_string(grace_ms())),
     #("active_workers", int.to_string(active_workers())),
+    #("active_accepts", int.to_string(active_accepts())),
   ])
   // 締切は monotonic 基準。wall-clock (NTP ステップ) の影響を受けない。
-  wait_for_workers(monotonic_ms() + grace_ms())
+  wait_for_drain(monotonic_ms() + grace_ms())
   log.info([#("msg", "shutdown_complete")])
   env.halt(0)
 }
 
-fn wait_for_workers(deadline_ms: Int) -> Nil {
-  case active_workers() <= 0 || monotonic_ms() >= deadline_ms {
+fn wait_for_drain(deadline_ms: Int) -> Nil {
+  case
+    active_workers() <= 0
+    && active_accepts() <= 0
+    || monotonic_ms() >= deadline_ms
+  {
     True -> Nil
     False -> {
       process.sleep(50)
-      wait_for_workers(deadline_ms)
+      wait_for_drain(deadline_ms)
     }
   }
 }

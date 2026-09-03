@@ -6,6 +6,10 @@
     worker_started/0,
     worker_finished/0,
     active_worker_count/0,
+    accept_started/0,
+    accept_finished/0,
+    active_accept_count/0,
+    with_accept_guard/1,
     install_shutdown_handler/1,
     run_guarded/2,
     registry_put_store/1,
@@ -54,6 +58,37 @@ worker_finished() ->
 
 active_worker_count() ->
     atomics:get(vectum_worker_counter(), 1).
+
+active_accept_count() ->
+    atomics:get(vectum_accept_counter(), 1).
+
+accept_started() ->
+    atomics:add(vectum_accept_counter(), 1, 1),
+    nil.
+
+accept_finished() ->
+    atomics:add(vectum_accept_counter(), 1, -1),
+    nil.
+
+vectum_accept_counter() ->
+    case persistent_term:get(vectum_active_accepts, undefined) of
+        undefined ->
+            Ref = atomics:new(1, [{signed, true}]),
+            _ = persistent_term:put(vectum_active_accepts, Ref),
+            Ref;
+        Ref ->
+            Ref
+    end.
+
+%% In-flight POST の完了を待つためのガード(shutdown/with_accept_guard 経由)。
+%% accept_finished() を必ず呼んでから返す。例外は再送出して振る舞いを変えない。
+with_accept_guard(Fun) ->
+    accept_started(),
+    try Fun() of
+        Result -> accept_finished(), Result
+    catch Class:Reason:Stack ->
+        accept_finished(), erlang:raise(Class, Reason, Stack)
+    end.
 
 vectum_worker_counter() ->
     case persistent_term:get(vectum_active_workers, undefined) of

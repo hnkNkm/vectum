@@ -261,3 +261,34 @@ pub fn file_db_uses_wal_mode_test() {
   let assert Ok(_) = sqlight.close(conn)
   remove_db(path)
 }
+
+/// #68a: crash-recovery の耐久性。close した tmp ファイルを
+/// open_and_recover で開き直し、get/claim が通ること。
+/// (既存 tmp test は開きっぱなしの接続の再利用のみで close→再 open しない)
+pub fn crash_recovery_reopens_closed_tmp_file_test() {
+  let path = "tmp/vectum-durability-test.db"
+  let _ = simplifile.create_directory("tmp")
+  remove_db(path)
+
+  let assert Ok(conn) = storage.connect(path)
+  let assert Ok(_) = storage.migrate(conn)
+  let ev = sample_event("evt-durable")
+  let assert Ok([_, _]) =
+    storage.accept(conn, ev, ["ci", "audit"], 1000, ["dur-1", "dur-2"])
+  // 1 件を delivering のまま crash 相当で閉じる
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
+  let assert Ok(_) = sqlight.close(conn)
+
+  // 開き直して復旧: delivering は pending に戻り、2 件とも再開できる
+  let assert Ok(2) = storage.open_and_recover(path, 2000)
+
+  let assert Ok(reopened) = storage.connect(path)
+  let assert Ok(event) = storage.get_event(reopened, "evt-durable")
+  assert event.id == "evt-durable"
+  let assert Ok(due) = storage.claim_due(reopened, 2000, 10)
+  assert list.length(due) == 2
+  assert list.contains(list.map(due, fn(d) { d.id }), claimed.id)
+
+  let assert Ok(_) = sqlight.close(reopened)
+  remove_db(path)
+}
