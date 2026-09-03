@@ -73,7 +73,7 @@ pub fn accept_then_successful_delivery_test() {
   )
   process.sleep(20)
   let assert Ok(0) = storage.call_pending_count(store)
-  let snap = metrics.snapshot(metrics)
+  let assert Ok(snap) = metrics.snapshot(metrics)
   assert snap.deliveries_success == 1
 }
 

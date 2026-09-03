@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import vectum/config.{HttpDestination}
 import vectum/delivery
 import vectum/event
@@ -84,4 +85,26 @@ pub fn default_timeout_used_when_destination_omits_it_test() {
       hmac_header: "X-Vectum-Signature",
     )
   assert delivery.build_outgoing(dest, ev(), 4321).timeout_ms == 4321
+}
+
+/// #54-2: 接続失敗の詳細(DNS/TLS/posix 原因)を捨てずに残す。
+pub fn connect_failed_preserves_detail_test() {
+  let outgoing =
+    delivery.Outgoing(
+      url: "http://127.0.0.1:9/events",
+      headers: [],
+      body: "{}",
+      timeout_ms: 2000,
+    )
+  let result = delivery.send_http(outgoing)
+  case result {
+    delivery.ConnectFailed(reason) -> {
+      assert reason != "connection error"
+      assert string.contains(reason, "FailedToConnect")
+      let assert delivery.RetryScheduled(_, _, error) =
+        delivery.decide(policy(), 0, result, 0, 0.0)
+      assert string.contains(error, "FailedToConnect")
+    }
+    _ -> panic as "expected ConnectFailed for closed port"
+  }
 }

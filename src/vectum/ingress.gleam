@@ -33,7 +33,7 @@ pub fn service_from_registry(
   config: Config,
 ) -> fn(Request(Connection)) -> Response(ResponseData) {
   fn(req) {
-    case registry.get_store(), registry.get_metrics() {
+    case registry.get_store_alive(), registry.get_metrics_alive() {
       Ok(store), Ok(metrics) -> handle_connection(config, store, metrics, req)
       _, _ ->
         response.new(503)
@@ -73,6 +73,32 @@ fn post_event(
 }
 
 fn read_and_persist(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  source: String,
+  req: Request(Connection),
+) -> Response(ResponseData) {
+  case is_chunked(req.headers) {
+    True -> {
+      metrics.record_rejected(metrics)
+      json_error(413, "payload size exceeded")
+    }
+    False -> read_body_with_limit(config, store, metrics, source, req)
+  }
+}
+
+/// mist 6 の read_body は Content-Length 無しを 0 とみなし、
+/// chunked ボディを上限なしで読む。巨大 chunked でメモリ枯渇するため、
+/// chunked を含む Transfer-Encoding は読み取り前に 413 で拒否する。
+fn is_chunked(headers: List(#(String, String))) -> Bool {
+  list.any(headers, fn(header) {
+    string.lowercase(header.0) == "transfer-encoding"
+    && string.contains(string.lowercase(header.1), "chunked")
+  })
+}
+
+fn read_body_with_limit(
   config: Config,
   store: Store,
   metrics: Metrics,
@@ -192,14 +218,17 @@ fn ready(store: Store) -> Response(ResponseData) {
 }
 
 fn metrics_response(store: Store, metrics: Metrics) -> Response(ResponseData) {
-  let pending = case storage.call_pending_count(store) {
-    Ok(n) -> n
-    Error(_) -> 0
+  // Storage / Metrics のどちらかが死んでいてもハンドラは落とさず 503。
+  // Dispatcher と同じく次 request で復帰する。
+  case storage.call_pending_count(store), metrics.snapshot(metrics) {
+    Ok(pending), Ok(snap) -> {
+      let body = metrics.prometheus(snap, pending)
+      response.new(200)
+      |> response.set_header("content-type", "text/plain; version=0.0.4")
+      |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+    }
+    _, _ -> text(503, "unavailable\n")
   }
-  let body = metrics.prometheus(metrics.snapshot(metrics), pending)
-  response.new(200)
-  |> response.set_header("content-type", "text/plain; version=0.0.4")
-  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
 }
 
 fn accepted(event_id: String, deliveries: Int) -> Response(ResponseData) {

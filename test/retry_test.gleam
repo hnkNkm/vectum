@@ -42,3 +42,10 @@ pub fn exhausted_after_max_attempts_test() {
   assert !retry.is_exhausted(policy(), 7)
   assert retry.is_exhausted(policy(), 8)
 }
+
+/// #54-3: 奇数 base でも jitter の上限は base(等 jitter の定義どおり)。
+pub fn jitter_caps_at_base_for_odd_base_test() {
+  let p = Policy(..policy(), jitter: True, initial_backoff_ms: 1001)
+  assert retry.backoff_ms(p, 1, 0.0) == 500
+  assert retry.backoff_ms(p, 1, 1.0) == 1001
+}

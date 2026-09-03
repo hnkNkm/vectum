@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{Some}
 import simplifile
@@ -184,4 +185,79 @@ pub fn dead_ops_on_missing_id_return_zero_test() {
   // dead_letter 以外の行(pending)も対象外
   let assert Ok(0) = storage.retry_dead(conn, "dm-1", 2000)
   let assert Ok(0) = storage.delete_dead(conn, "dm-1")
+}
+
+/// #47: delivery_ids 不足は "missing-id" を挿入せず Error にする。
+/// event 行も rollback される。
+pub fn short_delivery_ids_is_error_without_missing_id_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-short-ids")
+  let assert Error(_) =
+    storage.accept(conn, ev, ["ci", "audit"], 1000, ["only-one"])
+  let assert Error(_) = storage.get_event(conn, "evt-short-ids")
+  let assert Ok(0) = storage.count_pending(conn)
+}
+
+/// #47: 失敗した accept のあとも同じ接続で受理できる(rollback で再利用可能)。
+pub fn failed_accept_leaves_connection_reusable_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-dup")
+  let assert Ok(_) = storage.accept(conn, ev, ["ci"], 1000, ["dup-1"])
+  let assert Error(_) = storage.accept(conn, ev, ["ci"], 1001, ["dup-2"])
+  let ev2 = sample_event("evt-after-dup")
+  let assert Ok([d]) = storage.accept(conn, ev2, ["ci"], 1002, ["after-1"])
+  assert d.id == "after-1"
+}
+
+fn insert_raw_event(
+  conn: sqlight.Connection,
+  id: String,
+  payload: String,
+  metadata: String,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into events
+       (id, source, event_type, timestamp, received_at, payload, metadata)
+       values (?, 'github', 'push', '2026-01-01T00:00:00.000Z', 1000, ?, ?)",
+      on: conn,
+      with: [
+        sqlight.text(id),
+        sqlight.text(payload),
+        sqlight.text(metadata),
+      ],
+      expecting: decode.success(Nil),
+    )
+  Nil
+}
+
+/// #50: 壊れた payload は Null に化けず Error になる。
+pub fn corrupt_payload_is_error_test() {
+  use conn <- with_db
+  insert_raw_event(conn, "evt-bad-payload", "{not json", "{}")
+  let assert Error(_) = storage.get_event(conn, "evt-bad-payload")
+}
+
+/// #50: 壊れた metadata は空 dict に化けず Error になる。
+pub fn corrupt_metadata_is_error_test() {
+  use conn <- with_db
+  insert_raw_event(conn, "evt-bad-meta", "{\"a\": 1}", "{not json")
+  let assert Error(_) = storage.get_event(conn, "evt-bad-meta")
+}
+
+/// #49: ファイル DB は migrate 後に WAL モードである。
+pub fn file_db_uses_wal_mode_test() {
+  let path = "tmp/vectum-wal-test.db"
+  let _ = simplifile.create_directory("tmp")
+  remove_db(path)
+  let assert Ok(conn) = storage.connect(path)
+  let assert Ok(_) = storage.migrate(conn)
+  let assert Ok(rows) =
+    sqlight.query("pragma journal_mode", on: conn, with: [], expecting: {
+      use mode <- decode.field(0, decode.string)
+      decode.success(mode)
+    })
+  assert rows == ["wal"]
+  let assert Ok(_) = sqlight.close(conn)
+  remove_db(path)
 }

@@ -72,6 +72,7 @@ fn scale(current: Int, remaining: Int, max: Int) -> Int {
   }
 }
 
+/// Equal jitter: `base / 2 + U(0, base / 2)`。戻り値域は `[base / 2, base]`。
 fn apply_jitter(base: Int, unit: Float) -> Int {
   let clamped = case unit <. 0.0 {
     True -> 0.0
@@ -82,5 +83,5 @@ fn apply_jitter(base: Int, unit: Float) -> Int {
       }
   }
   let half = base / 2
-  half + float.round(int.to_float(half) *. clamped)
+  half + float.round(int.to_float(base - half) *. clamped)
 }

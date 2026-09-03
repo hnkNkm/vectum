@@ -70,7 +70,7 @@ pub fn supervisor_restarts_metrics_after_kill_test() {
 
   let assert Ok(restarted) = registry.get_metrics()
   // snapshot が応答すれば再起動済み(カウンタはリセットされる)
-  let _ = metrics.snapshot(restarted)
+  let assert Ok(_) = metrics.snapshot(restarted)
   let assert Ok(new_pid) = process.subject_owner(restarted.subject)
   assert new_pid != pid
 }
