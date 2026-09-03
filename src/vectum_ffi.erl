@@ -1,5 +1,5 @@
 -module(vectum_ffi).
--export([get_env/1, set_env/2, unset_env/1, halt/1]).
+-export([get_env/1, set_env/2, unset_env/1, halt/1, monotonic_ms/0]).
 -export([
     shutdown_flag_get/0,
     shutdown_flag_set/1,
@@ -30,6 +30,8 @@ unset_env(Name) when is_binary(Name) ->
 
 halt(Code) when is_integer(Code) ->
     erlang:halt(Code).
+monotonic_ms() ->
+    erlang:monotonic_time(millisecond).
 
 %% ------------------------------------------------------------------
 %% Graceful shutdown (vectum/shutdown.gleam)
@@ -75,12 +77,13 @@ install_shutdown_handler(Fun) ->
 
 %% ワーカー枠の解放を panic でも保証するためのガード(vectum/dispatcher.gleam)。
 %% Fun() を実行し、例外の有無に関わらず必ず After() を呼ぶ。
+%% 戻り値は Fun() が完走したかどうか。panic 時は false。
 run_guarded(Fun, After) ->
-    try Fun()
-    catch _:_ -> ok
+    Result = try Fun(), true
+    catch _:_ -> false
     end,
     After(),
-    nil.
+    Result.
 
 %% ------------------------------------------------------------------
 %% Registry (vectum/registry.gleam)

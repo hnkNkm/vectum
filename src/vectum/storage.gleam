@@ -52,13 +52,13 @@ pub type Message {
     limit: Int,
   )
   MarkSuccess(
-    reply: Subject(Result(Nil, sqlight.Error)),
+    reply: Subject(Result(Int, sqlight.Error)),
     id: String,
     attempts: Int,
     now_ms: Int,
   )
   MarkRetry(
-    reply: Subject(Result(Nil, sqlight.Error)),
+    reply: Subject(Result(Int, sqlight.Error)),
     id: String,
     attempts: Int,
     next_attempt_at: Int,
@@ -66,7 +66,7 @@ pub type Message {
     now_ms: Int,
   )
   MarkDead(
-    reply: Subject(Result(Nil, sqlight.Error)),
+    reply: Subject(Result(Int, sqlight.Error)),
     id: String,
     attempts: Int,
     error: String,
@@ -298,12 +298,15 @@ pub fn claim_due(
   })
 }
 
+/// delivering の行にだけ効く。戻り値は更新件数。
+/// reaper に奪取された後の旧ワーカーの遅延完了は 0 件になり、
+/// 呼出側は確定しなかったことを検知できる。
 pub fn mark_success(
   conn: sqlight.Connection,
   id: String,
   attempts: Int,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   update_delivery(conn, id, "succeeded", attempts, now_ms, now_ms, None)
 }
 
@@ -314,8 +317,8 @@ pub fn mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
-  sqlight.query(
+) -> Result(Int, sqlight.Error) {
+  use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'retry_scheduled', attempts = ?, next_attempt_at = ?,
          last_attempt_at = ?, last_error = ?, updated_at = ?
@@ -330,8 +333,8 @@ pub fn mark_retry(
       sqlight.text(id),
     ],
     expecting: decode.success(Nil),
-  )
-  |> result.replace(Nil)
+  ))
+  changed_rows(conn)
 }
 
 pub fn mark_dead(
@@ -340,8 +343,8 @@ pub fn mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
-  sqlight.query(
+) -> Result(Int, sqlight.Error) {
+  use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'dead_letter', attempts = ?, last_attempt_at = ?,
          last_error = ?, updated_at = ?
@@ -355,8 +358,8 @@ pub fn mark_dead(
       sqlight.text(id),
     ],
     expecting: decode.success(Nil),
-  )
-  |> result.replace(Nil)
+  ))
+  changed_rows(conn)
 }
 
 fn update_delivery(
@@ -367,10 +370,10 @@ fn update_delivery(
   last_attempt_at: Int,
   now_ms: Int,
   error: Option(String),
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   // mark_* は delivering の間だけ有効。reaper 後の旧ワーカーの遅延完了が、
   // 新しい claim の結果を上書きしないようにする。
-  sqlight.query(
+  use _ <- result.try(sqlight.query(
     "update deliveries
      set status = ?, attempts = ?, last_attempt_at = ?, last_error = ?,
          updated_at = ?
@@ -385,8 +388,8 @@ fn update_delivery(
       sqlight.text(id),
     ],
     expecting: decode.success(Nil),
-  )
-  |> result.replace(Nil)
+  ))
+  changed_rows(conn)
 }
 
 /// updated_at が cutoff_ms より前の delivering を pending に戻し、
@@ -566,7 +569,7 @@ pub fn call_mark_success(
   id: String,
   attempts: Int,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   process.call(store.subject, 5000, fn(reply) {
     MarkSuccess(reply:, id:, attempts:, now_ms:)
   })
@@ -579,7 +582,7 @@ pub fn call_mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   process.call(store.subject, 5000, fn(reply) {
     MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:)
   })
@@ -591,7 +594,7 @@ pub fn call_mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
-) -> Result(Nil, sqlight.Error) {
+) -> Result(Int, sqlight.Error) {
   process.call(store.subject, 5000, fn(reply) {
     MarkDead(reply:, id:, attempts:, error:, now_ms:)
   })

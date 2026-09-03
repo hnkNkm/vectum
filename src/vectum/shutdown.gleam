@@ -9,7 +9,6 @@
 
 import gleam/erlang/process
 import gleam/int
-import vectum/clock
 import vectum/env
 import vectum/log
 
@@ -42,13 +41,25 @@ pub fn install_handler(on_shutdown: fn() -> Nil) -> Nil
 
 const default_grace_ms = 10_000
 
+@external(erlang, "vectum_ffi", "monotonic_ms")
+fn monotonic_ms() -> Int
+
 /// 猶予時間(ミリ秒)。環境変数 `VECTUM_SHUTDOWN_GRACE_MS`、既定 10 秒。
+/// 不正値 (非数値・負数) は警告ログを出して既定に倒す。
+/// `0` は drain なし (即時 halt) を意味する。
 pub fn grace_ms() -> Int {
   case env.get("VECTUM_SHUTDOWN_GRACE_MS") {
     Ok(raw) ->
       case int.parse(raw) {
         Ok(ms) if ms >= 0 -> ms
-        _ -> default_grace_ms
+        _ -> {
+          log.info([
+            #("msg", "invalid_shutdown_grace"),
+            #("value", raw),
+            #("fallback_ms", int.to_string(default_grace_ms)),
+          ])
+          default_grace_ms
+        }
       }
     Error(_) -> default_grace_ms
   }
@@ -66,13 +77,14 @@ pub fn run_shutdown_sequence() -> Nil {
     #("grace_ms", int.to_string(grace_ms())),
     #("active_workers", int.to_string(active_workers())),
   ])
-  wait_for_workers(clock.now_ms() + grace_ms())
+  // 締切は monotonic 基準。wall-clock (NTP ステップ) の影響を受けない。
+  wait_for_workers(monotonic_ms() + grace_ms())
   log.info([#("msg", "shutdown_complete")])
   env.halt(0)
 }
 
 fn wait_for_workers(deadline_ms: Int) -> Nil {
-  case active_workers() <= 0 || clock.now_ms() >= deadline_ms {
+  case active_workers() <= 0 || monotonic_ms() >= deadline_ms {
     True -> Nil
     False -> {
       process.sleep(50)

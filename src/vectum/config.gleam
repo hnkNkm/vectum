@@ -85,6 +85,32 @@ pub fn load_with(
   }
 }
 
+/// dead-letter 系コマンド用に `[storage] path` だけ読む。
+/// webhook secret などの無関係な検証エラーで操作不能にならないようにする。
+pub fn load_storage_path(path: String) -> Result(String, ConfigError) {
+  case simplifile.read(path) {
+    Error(error) ->
+      Error(
+        ConfigError([
+          "failed to read config " <> path <> ": " <> string.inspect(error),
+        ]),
+      )
+    Ok(text) -> parse_storage_path(text)
+  }
+}
+
+pub fn parse_storage_path(text: String) -> Result(String, ConfigError) {
+  case tom.parse(text) {
+    Error(error) ->
+      Error(ConfigError(["invalid TOML: " <> string.inspect(error)]))
+    Ok(doc) ->
+      case decode_storage(doc) {
+        Ok(storage) -> Ok(storage.path)
+        Error(messages) -> Error(ConfigError(messages))
+      }
+  }
+}
+
 pub fn parse(text: String) -> Result(Config, ConfigError) {
   parse_with(text, default_getenv)
 }
@@ -384,10 +410,32 @@ fn resolve_secret(
 ) -> Result(Option(String), List(String)) {
   use inline <- result.try(opt_string_opt(table, ["hmac_secret"]))
   use env_name <- result.try(opt_string_opt(table, ["hmac_secret_env"]))
-  case env_name {
-    Some(var) ->
+  // inline と env 参照の併設は意図が曖昧なため拒否する。
+  // 空文字の secret は検証鍵として無意味なため拒否する。
+  case inline, env_name {
+    Some(_), Some(var) ->
+      Error([
+        kind
+        <> " "
+        <> name
+        <> " sets both hmac_secret and hmac_secret_env ("
+        <> var
+        <> "); use only one",
+      ])
+    _, Some(var) ->
       case getenv(var) {
-        Ok(value) -> Ok(Some(value))
+        Ok(value) ->
+          case string.trim(value) {
+            "" ->
+              Error([
+                kind
+                <> " "
+                <> name
+                <> " references empty environment variable "
+                <> var,
+              ])
+            _ -> Ok(Some(value))
+          }
         Error(_) ->
           Error([
             kind
@@ -397,7 +445,12 @@ fn resolve_secret(
             <> var,
           ])
       }
-    None -> Ok(inline)
+    Some(value), None ->
+      case string.trim(value) {
+        "" -> Error([kind <> " " <> name <> " has empty hmac_secret"])
+        _ -> Ok(Some(value))
+      }
+    None, None -> Ok(None)
   }
 }
 
@@ -421,6 +474,18 @@ fn validate(config: Config) -> List(String) {
       "destination",
     ),
     duplicate_names(list.map(config.routes, fn(route) { route.name }), "route"),
+    reject_empty_names(
+      list.map(config.sources, fn(source) { source.name }),
+      "source",
+    ),
+    reject_empty_names(
+      list.map(config.destinations, destination_name),
+      "destination",
+    ),
+    reject_empty_names(
+      list.map(config.routes, fn(route) { route.name }),
+      "route",
+    ),
     list.flat_map(config.sources, validate_source),
     list.flat_map(config.destinations, validate_destination),
     list.flat_map(config.routes, fn(route) {
@@ -458,7 +523,25 @@ fn validate_delivery(policy: Policy, concurrency: Int) -> List(String) {
 }
 
 fn validate_source(source: Source) -> List(String) {
-  case source.type_from_header, source.type_from_json, source.type_fixed {
+  // source 名は POST /events/:source の単一パス要素と照合される。
+  // 空や `/` 含みは到達不能な定義になるため config 時に落とす。
+  let name_errors = case source.name {
+    "" -> ["source name must not be empty"]
+    _ ->
+      case string.contains(source.name, "/") {
+        True -> [
+          "source \""
+          <> source.name
+          <> "\" must not contain '/' (POST /events/:source is a single path segment)",
+        ]
+        False -> []
+      }
+  }
+  let type_errors = case
+    source.type_from_header,
+    source.type_from_json,
+    source.type_fixed
+  {
     None, None, None -> [
       "source "
       <> source.name
@@ -466,6 +549,7 @@ fn validate_source(source: Source) -> List(String) {
     ]
     _, _, _ -> []
   }
+  list.append(name_errors, type_errors)
 }
 
 fn validate_destination(destination: Destination) -> List(String) {
@@ -504,6 +588,10 @@ fn validate_route(
       "route " <> route.name <> " references unknown source " <> route.source,
     ]
   }
+  let empty_error = case route.destinations {
+    [] -> ["route " <> route.name <> " must list at least one destination"]
+    _ -> []
+  }
   let dest_errors =
     list.filter_map(route.destinations, fn(dest) {
       case list.any(destinations, fn(item) { destination_name(item) == dest }) {
@@ -514,7 +602,16 @@ fn validate_route(
           )
       }
     })
-  list.append(source_error, dest_errors)
+  list.append(source_error, list.append(empty_error, dest_errors))
+}
+
+/// 空・空白のみの name を拒否する。空 source 名は到達不能、
+/// 空 route/destination 名は参照解決を曖昧にするため。
+fn reject_empty_names(names: List(String), kind: String) -> List(String) {
+  case list.any(names, fn(name) { string.trim(name) == "" }) {
+    True -> [kind <> " name must not be empty"]
+    False -> []
+  }
 }
 
 fn duplicate_names(names: List(String), kind: String) -> List(String) {

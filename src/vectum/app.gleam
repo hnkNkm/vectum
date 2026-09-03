@@ -68,12 +68,24 @@ pub fn run_server(path: String) -> Nil {
     Ok(_) -> Nil
     Error(error) -> fail("failed to start services: " <> error)
   }
-  let assert Ok(_) =
+  case
     ingress.service_from_registry(parsed)
     |> mist.new
     |> mist.bind(parsed.server.host)
     |> mist.port(parsed.server.port)
     |> mist.start
+  {
+    Ok(_) -> Nil
+    Error(error) ->
+      fail(
+        "failed to bind "
+        <> parsed.server.host
+        <> ":"
+        <> int.to_string(parsed.server.port)
+        <> ": "
+        <> string.inspect(error),
+      )
+  }
   log.info([
     #("msg", "listening"),
     #("host", parsed.server.host),
@@ -84,8 +96,7 @@ pub fn run_server(path: String) -> Nil {
 }
 
 fn dead_list(path: String) -> Nil {
-  let parsed = require_config(path)
-  let store = require_store(parsed.storage.path)
+  let store = require_dead_store(path)
   case storage.call_list_dead(store) {
     Ok(items) -> io.println(cli.format_dead(items))
     Error(error) ->
@@ -94,8 +105,7 @@ fn dead_list(path: String) -> Nil {
 }
 
 fn dead_retry(path: String, id: String) -> Nil {
-  let parsed = require_config(path)
-  let store = require_store(parsed.storage.path)
+  let store = require_dead_store(path)
   case storage.call_retry_dead(store, id, clock.now_ms()) {
     Ok(0) -> fail("no dead-letter delivery with id " <> id)
     Ok(_) -> io.println("requeued " <> id)
@@ -105,13 +115,24 @@ fn dead_retry(path: String, id: String) -> Nil {
 }
 
 fn dead_delete(path: String, id: String) -> Nil {
-  let parsed = require_config(path)
-  let store = require_store(parsed.storage.path)
+  let store = require_dead_store(path)
   case storage.call_delete_dead(store, id) {
     Ok(0) -> fail("no dead-letter delivery with id " <> id)
     Ok(_) -> io.println("deleted " <> id)
     Error(error) ->
       fail("failed to delete " <> id <> ": " <> string.inspect(error))
+  }
+}
+
+/// dead-letter 系は `[storage] path` のみ読む。secret 検証エラー時も操作できる。
+fn require_dead_store(path: String) -> storage.Store {
+  case config.load_storage_path(path) {
+    Ok(storage_path) -> require_store(storage_path)
+    Error(ConfigError(messages)) -> {
+      print_errors(path, messages)
+      env.halt(1)
+      panic as "unreachable"
+    }
   }
 }
 

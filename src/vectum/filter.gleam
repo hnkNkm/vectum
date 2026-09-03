@@ -65,9 +65,11 @@ pub fn matches_value(filter: Filter, found: Result(EventValue, Nil)) -> Bool {
         Error(_) -> False
       }
     Neq ->
+      // 欠損パスは非マッチに倒す。存在しない field への neq は
+      // NotExists で表現する。Eq/Contains との対称性のため。
       case found {
         Ok(value) -> !event.equal(value, filter.value)
-        Error(_) -> True
+        Error(_) -> False
       }
     Gt | Gte | Lt | Lte ->
       case found {
@@ -95,16 +97,28 @@ fn result_is_ok(result: Result(a, b)) -> Bool {
 }
 
 fn compare_numbers(op: Op, left: EventValue, right: EventValue) -> Bool {
-  case as_number(left), as_number(right) {
-    Ok(a), Ok(b) ->
+  // Int 同士は整数のまま比較する。Float 経由では 2^53 超で誤順序になる。
+  case left, right {
+    event.Int(a), event.Int(b) ->
       case op {
-        Gt -> a >. b
-        Gte -> a >=. b
-        Lt -> a <. b
-        Lte -> a <=. b
+        Gt -> a > b
+        Gte -> a >= b
+        Lt -> a < b
+        Lte -> a <= b
         _ -> False
       }
-    _, _ -> False
+    _, _ ->
+      case as_number(left), as_number(right) {
+        Ok(a), Ok(b) ->
+          case op {
+            Gt -> a >. b
+            Gte -> a >=. b
+            Lt -> a <. b
+            Lte -> a <=. b
+            _ -> False
+          }
+        _, _ -> False
+      }
   }
 }
 

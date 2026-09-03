@@ -74,3 +74,23 @@ pub fn parse_op_rejects_unknown_test() {
   let assert Ok(filter.Eq) = filter.parse_op("EQ")
   let assert Error(_) = filter.parse_op("regex")
 }
+
+pub fn neq_missing_is_false_test() {
+  let f = Filter(path: "nope", op: filter.Neq, value: event.String("x"))
+  assert !filter.matches(f, payment())
+}
+
+pub fn int_comparison_is_exact_test() {
+  // 2^62+1 は Float にすると 2^62 に丸められる。整数比較なら区別できる。
+  let data =
+    event.Object(
+      dict.from_list([#("id", event.Int(4_611_686_018_427_387_905))]),
+    )
+  let f =
+    Filter(
+      path: "id",
+      op: filter.Gt,
+      value: event.Int(4_611_686_018_427_387_904),
+    )
+  assert filter.matches(f, data)
+}

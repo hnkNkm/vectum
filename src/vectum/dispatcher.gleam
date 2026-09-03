@@ -17,8 +17,9 @@ import vectum/storage.{type Delivery, type Store}
 
 /// body を実行し、例外(panic)があっても必ず after を呼んでから返す。
 /// ワーカー枠の解放を panic でも保証するためのガード。
+/// 戻り値は body が完走したかどうか。panic 時は False。
 @external(erlang, "vectum_ffi", "run_guarded")
-fn run_guarded(body: fn() -> a, after: fn() -> Nil) -> Nil
+fn run_guarded(body: fn() -> a, after: fn() -> Nil) -> Bool
 
 /// claim 間隔(ミリ秒)。
 const poll_interval_ms = 200
@@ -78,7 +79,14 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
     Tick -> {
       case registry.get_store(), registry.get_metrics() {
         Ok(store), Ok(metrics) -> {
-          let _ = tick(state.config, store, metrics, state.send)
+          case tick(state.config, store, metrics, state.send) {
+            Ok(_) -> Nil
+            Error(error) ->
+              log.error([
+                #("msg", "delivery_claim_failed"),
+                #("error", error),
+              ])
+          }
           let state = reap_if_due(state, store, metrics)
           let _ = process.send_after(state.self, poll_interval_ms, Tick)
           actor.continue(state)
@@ -164,13 +172,24 @@ pub fn process_one(
   item: Delivery,
 ) -> Nil {
   shutdown.worker_started()
-  run_guarded(
-    fn() {
-      let _ = process_one_inner(config, store, metrics, send, item)
-      Nil
-    },
-    fn() { shutdown.worker_finished() },
-  )
+  // run_guarded は panic 時に False を返す。枠解放は FFI 側で保証される。
+  let completed =
+    run_guarded(
+      fn() {
+        let _ = process_one_inner(config, store, metrics, send, item)
+        Nil
+      },
+      fn() { shutdown.worker_finished() },
+    )
+  case completed {
+    True -> Nil
+    False ->
+      log.error([
+        #("msg", "delivery_worker_panic"),
+        #("delivery_id", item.id),
+        #("destination", item.destination),
+      ])
+  }
 }
 
 fn process_one_inner(
@@ -181,34 +200,35 @@ fn process_one_inner(
   item: Delivery,
 ) {
   metrics.record_attempt(metrics)
-  let now = clock.now_ms()
-  case
-    {
-      use event <- result.try(
-        storage.call_get_event(store, item.event_id)
-        |> result.map_error(string.inspect),
+  // decide 前の取得・解決フェーズと decide 後の永続化フェーズを分離する。
+  // 永続化の失敗を decide に戻すと誤遷移＋二重計数になるため、
+  // persist 層の Error はログに留めて再スケジュールしない。
+  let outcome = {
+    use event <- result.try(
+      storage.call_get_event(store, item.event_id)
+      |> result.map_error(string.inspect),
+    )
+    use dest <- result.try(
+      config.find_destination(config, item.destination)
+      |> result.replace_error("unknown destination " <> item.destination),
+    )
+    let outgoing =
+      delivery.build_outgoing(dest, event, config.delivery.timeout_ms)
+    let started = clock.now_ms()
+    let result = send(outgoing)
+    let update =
+      delivery.decide(
+        config.delivery,
+        item.attempts,
+        result,
+        clock.now_ms(),
+        random_unit(),
       )
-      use dest <- result.try(
-        config.find_destination(config, item.destination)
-        |> result.replace_error("unknown destination " <> item.destination),
-      )
-      let outgoing =
-        delivery.build_outgoing(dest, event, config.delivery.timeout_ms)
-      let started = clock.now_ms()
-      let result = send(outgoing)
-      let update =
-        delivery.decide(
-          config.delivery,
-          item.attempts,
-          result,
-          clock.now_ms(),
-          random_unit(),
-        )
-      let latency = clock.now_ms() - started
-      persist_update(store, metrics, item, event.id, update, now, latency)
-    }
-  {
-    Ok(_) -> Nil
+    Ok(#(event.id, update, clock.now_ms() - started))
+  }
+  case outcome {
+    Ok(#(event_id, update, latency)) ->
+      persist_or_log(store, metrics, item, event_id, update, latency)
     Error(reason) -> {
       log.error([
         #("msg", "delivery_failed"),
@@ -220,13 +240,40 @@ fn process_one_inner(
           config.delivery,
           item.attempts,
           delivery.ConnectFailed(reason),
-          now,
+          clock.now_ms(),
           random_unit(),
         )
-      let _ =
-        persist_update(store, metrics, item, item.event_id, update, now, 0)
-      Nil
+      persist_or_log(store, metrics, item, item.event_id, update, 0)
     }
+  }
+}
+
+fn persist_or_log(
+  store: Store,
+  metrics: Metrics,
+  item: Delivery,
+  event_id: String,
+  update: delivery.Update,
+  latency: Int,
+) -> Nil {
+  case
+    persist_update(
+      store,
+      metrics,
+      item,
+      event_id,
+      update,
+      clock.now_ms(),
+      latency,
+    )
+  {
+    Ok(_) -> Nil
+    Error(error) ->
+      log.error([
+        #("msg", "delivery_persist_failed"),
+        #("delivery_id", item.id),
+        #("error", error),
+      ])
   }
 }
 
@@ -239,52 +286,97 @@ fn persist_update(
   now: Int,
   latency: Int,
 ) -> Result(Nil, String) {
+  // mark 系は delivering の行にだけ効き、更新件数を返す。
+  // 0 件 = reaper に奪取済みのため metrics/ログを出さず再送サイクルに委ねる。
   case update {
     delivery.Succeeded(attempts) -> {
-      metrics.record_success(metrics, latency)
-      log.info([
-        #("msg", "delivery_success"),
-        #("event_id", event_id),
-        #("delivery_id", item.id),
-        #("destination", item.destination),
-        #("attempt", int.to_string(attempts)),
-        #("latency", int.to_string(latency)),
-        #("result", "success"),
-      ])
-      storage.call_mark_success(store, item.id, attempts, now)
-      |> result.map_error(string.inspect)
+      case
+        storage.call_mark_success(store, item.id, attempts, now)
+        |> result.map_error(string.inspect)
+      {
+        Ok(0) -> {
+          log_stale(item, event_id, "success")
+          Ok(Nil)
+        }
+        Ok(_) -> {
+          metrics.record_success(metrics, latency)
+          log.info([
+            #("msg", "delivery_success"),
+            #("event_id", event_id),
+            #("delivery_id", item.id),
+            #("destination", item.destination),
+            #("attempt", int.to_string(attempts)),
+            #("latency", int.to_string(latency)),
+            #("result", "success"),
+          ])
+          Ok(Nil)
+        }
+        Error(error) -> Error(error)
+      }
     }
     delivery.RetryScheduled(attempts, next, error) -> {
-      metrics.record_retry(metrics)
-      log.info([
-        #("msg", "delivery_retry"),
-        #("event_id", event_id),
-        #("delivery_id", item.id),
-        #("destination", item.destination),
-        #("attempt", int.to_string(attempts)),
-        #("latency", int.to_string(latency)),
-        #("result", "retry"),
-        #("error", error),
-      ])
-      storage.call_mark_retry(store, item.id, attempts, next, error, now)
-      |> result.map_error(string.inspect)
+      case
+        storage.call_mark_retry(store, item.id, attempts, next, error, now)
+        |> result.map_error(string.inspect)
+      {
+        Ok(0) -> {
+          log_stale(item, event_id, "retry")
+          Ok(Nil)
+        }
+        Ok(_) -> {
+          metrics.record_retry(metrics)
+          log.info([
+            #("msg", "delivery_retry"),
+            #("event_id", event_id),
+            #("delivery_id", item.id),
+            #("destination", item.destination),
+            #("attempt", int.to_string(attempts)),
+            #("latency", int.to_string(latency)),
+            #("result", "retry"),
+            #("error", error),
+          ])
+          Ok(Nil)
+        }
+        Error(error) -> Error(error)
+      }
     }
     delivery.DeadLettered(attempts, error) -> {
-      metrics.record_dead(metrics)
-      log.error([
-        #("msg", "delivery_dead"),
-        #("event_id", event_id),
-        #("delivery_id", item.id),
-        #("destination", item.destination),
-        #("attempt", int.to_string(attempts)),
-        #("latency", int.to_string(latency)),
-        #("result", "dead_letter"),
-        #("error", error),
-      ])
-      storage.call_mark_dead(store, item.id, attempts, error, now)
-      |> result.map_error(string.inspect)
+      case
+        storage.call_mark_dead(store, item.id, attempts, error, now)
+        |> result.map_error(string.inspect)
+      {
+        Ok(0) -> {
+          log_stale(item, event_id, "dead_letter")
+          Ok(Nil)
+        }
+        Ok(_) -> {
+          metrics.record_dead(metrics)
+          log.error([
+            #("msg", "delivery_dead"),
+            #("event_id", event_id),
+            #("delivery_id", item.id),
+            #("destination", item.destination),
+            #("attempt", int.to_string(attempts)),
+            #("latency", int.to_string(latency)),
+            #("result", "dead_letter"),
+            #("error", error),
+          ])
+          Ok(Nil)
+        }
+        Error(error) -> Error(error)
+      }
     }
   }
+}
+
+fn log_stale(item: Delivery, event_id: String, outcome: String) -> Nil {
+  log.info([
+    #("msg", "delivery_stale"),
+    #("event_id", event_id),
+    #("delivery_id", item.id),
+    #("destination", item.destination),
+    #("outcome", outcome),
+  ])
 }
 
 pub fn random_unit() -> Float {

@@ -54,11 +54,11 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   let assert Ok([delivery]) = storage.accept(conn, ev, ["ci"], 1000, ["dead-1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
   assert claimed.id == delivery.id
-  let assert Ok(Nil) =
+  let assert Ok(1) =
     storage.mark_retry(conn, claimed.id, 1, 5000, "timeout", 1100)
   let assert Ok([]) = storage.claim_due(conn, 2000, 10)
   let assert Ok([again]) = storage.claim_due(conn, 5000, 10)
-  let assert Ok(Nil) = storage.mark_dead(conn, again.id, 8, "boom", 6000)
+  let assert Ok(1) = storage.mark_dead(conn, again.id, 8, "boom", 6000)
   let assert Ok([dead]) = storage.list_dead(conn)
   assert dead.status == storage.DeadLetter
   assert dead.last_error == Some("boom")
@@ -70,7 +70,7 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   assert pending.status == storage.Delivering
   assert pending.attempts == 0
 
-  let assert Ok(Nil) = storage.mark_dead(conn, pending.id, 8, "boom", 8000)
+  let assert Ok(1) = storage.mark_dead(conn, pending.id, 8, "boom", 8000)
   let assert Ok(1) = storage.delete_dead(conn, pending.id)
   let assert Ok([]) = storage.list_dead(conn)
 }
@@ -91,7 +91,7 @@ pub fn success_clears_pending_test() {
   let ev = sample_event("evt-5")
   let assert Ok(_) = storage.accept(conn, ev, ["ci"], 1000, ["s1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
-  let assert Ok(Nil) = storage.mark_success(conn, claimed.id, 1, 1500)
+  let assert Ok(1) = storage.mark_success(conn, claimed.id, 1, 1500)
   let assert Ok(0) = storage.count_pending(conn)
   let assert Ok([]) = storage.list_dead(conn)
 }
@@ -159,12 +159,11 @@ pub fn mark_retry_does_not_touch_succeeded_row_test() {
   let assert Ok([d]) = storage.accept(conn, ev, ["ci"], 1000, ["g-1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
   let _ = d
-  let assert Ok(Nil) = storage.mark_success(conn, claimed.id, 1, 1100)
+  let assert Ok(1) = storage.mark_success(conn, claimed.id, 1, 1100)
 
-  // succeeded 行への mark_retry / mark_dead は無視される
-  let assert Ok(Nil) =
-    storage.mark_retry(conn, claimed.id, 2, 5000, "late", 1200)
-  let assert Ok(Nil) = storage.mark_dead(conn, claimed.id, 2, "late", 1300)
+  // succeeded 行への mark_retry / mark_dead は 0 件で無視される
+  let assert Ok(0) = storage.mark_retry(conn, claimed.id, 2, 5000, "late", 1200)
+  let assert Ok(0) = storage.mark_dead(conn, claimed.id, 2, "late", 1300)
 
   // retry_scheduled / dead_letter になっていない(claim も dead 一覧も空)
   let assert Ok([]) = storage.claim_due(conn, 999_999, 10)
