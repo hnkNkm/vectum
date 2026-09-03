@@ -104,3 +104,35 @@ pub fn github_push_is_accepted_and_routed_test() {
   assert dict.get(event.metadata, "x-github-delivery") == Ok("abc")
   assert dict.get(event.metadata, "x-hub-signature-256") == Error(Nil)
 }
+
+pub fn tricky_content_type_is_415_test() {
+  let assert Error(accept.Reject(415, "invalid content-type")) =
+    accept.normalize(
+      cfg(),
+      "internal",
+      "text/plain; x=application/json",
+      [],
+      "{}",
+      "t",
+      "id",
+    )
+}
+
+pub fn empty_header_event_type_is_missing_test() {
+  // 空文字の type header は欠損扱いで fallback せず、空 type で永続化しない。
+  // github source には header 以外の type 解決手段がないため 400 になる。
+  let body = "{}"
+  let assert Error(accept.Reject(400, "missing event type")) =
+    accept.normalize(
+      cfg(),
+      "github",
+      "application/json",
+      [
+        #("x-github-event", ""),
+        #("x-hub-signature-256", hmac.sign_string("s3cret", body)),
+      ],
+      body,
+      "t",
+      "id",
+    )
+}

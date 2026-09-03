@@ -115,7 +115,7 @@ pub fn metadata_filter_eq_matches_header_test() {
   )
 }
 
-pub fn metadata_filter_exists_and_neq_missing_test() {
+pub fn metadata_filter_exists_and_neq_test() {
   let with_header = meta_ev([#("x-github-event", "push")])
   let without = meta_ev([])
 
@@ -123,11 +123,30 @@ pub fn metadata_filter_exists_and_neq_missing_test() {
   assert route.matches_route(meta_route(filter.Exists, event.Null), with_header)
   assert !route.matches_route(meta_route(filter.Exists, event.Null), without)
 
-  // 対象が無い場合の neq は真(Data の neq と同じ意味論)
-  assert route.matches_route(
+  // 欠損パスへの neq は偽。存在しない field は NotExists で表現する。
+  assert !route.matches_route(
     meta_route(filter.Neq, event.String("push")),
     without,
   )
+  assert route.matches_route(
+    meta_route(filter.Neq, event.String("pull_request")),
+    with_header,
+  )
+}
+
+pub fn metadata_numeric_eq_matches_test() {
+  let e = meta_ev([#("x-retry", "3")])
+  let r =
+    Route(
+      name: "m",
+      source: "github",
+      event: "*",
+      destinations: ["out"],
+      filters: [
+        Filter(path: "metadata.x-retry", op: filter.Eq, value: event.Int(3)),
+      ],
+    )
+  assert route.matches_route(r, e)
 }
 
 pub fn metadata_filter_does_not_leak_into_data_test() {

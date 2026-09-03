@@ -20,6 +20,16 @@ pub fn parse_dead_letter_commands_test() {
     cli.parse(["dead", "delete", "d2", "--config", "c.toml"])
 }
 
+pub fn parse_config_equals_and_leading_flag_test() {
+  let assert cli.Run("x.toml") = cli.parse(["run", "--config=x.toml"])
+  let assert cli.Run("x.toml") = cli.parse(["--config", "x.toml", "run"])
+  let assert cli.Validate("v.toml") = cli.parse(["--config=v.toml", "validate"])
+  let assert cli.DeadRetry("c.toml", "d2") =
+    cli.parse(["dead", "retry", "--config", "c.toml", "d2"])
+  let assert cli.DeadList("db.toml") =
+    cli.parse(["dead", "list", "--config=db.toml"])
+}
+
 pub fn format_dead_table_test() {
   assert cli.format_dead([]) == "no dead-letter deliveries"
   let row =

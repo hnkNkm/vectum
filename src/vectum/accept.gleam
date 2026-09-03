@@ -69,8 +69,17 @@ fn require_source(config: Config, name: String) -> Result(Source, Reject) {
 }
 
 fn require_json_content_type(content_type: String) -> Result(Nil, Reject) {
-  let lowered = string.lowercase(content_type)
-  case string.contains(lowered, "application/json") {
+  // `;` 以降のパラメータを除いた media type で完全一致させる。
+  // `text/plain; x=application/json` のようなすり抜けを防ぐ。
+  // `+json` サフィックスは v0.1 では受け付けない。
+  let media =
+    content_type
+    |> string.split(";")
+    |> list.first
+    |> result.unwrap("")
+    |> string.trim
+    |> string.lowercase
+  case media == "application/json" {
     True -> Ok(Nil)
     False -> Error(Reject(415, "invalid content-type"))
   }
@@ -106,13 +115,13 @@ fn extract_event_type(
   data: event.EventValue,
 ) -> Result(String, Reject) {
   let from_header = case source.type_from_header {
-    Some(name) -> header_value(headers, name)
+    Some(name) -> non_blank(header_value(headers, name))
     None -> Error(Nil)
   }
   let from_json = case source.type_from_json {
     Some(path) ->
       case event.get_path(data, path) {
-        Ok(event.String(value)) -> Ok(value)
+        Ok(event.String(value)) -> non_blank(Ok(value))
         _ -> Error(Nil)
       }
     None -> Error(Nil)
@@ -125,6 +134,18 @@ fn extract_event_type(
   |> result.or(from_json)
   |> result.or(from_fixed)
   |> result.replace_error(Reject(400, "missing event type"))
+}
+
+/// 空・空白のみの値は欠損扱いにし、fallback 鎖を短絡させない。
+fn non_blank(value: Result(String, Nil)) -> Result(String, Nil) {
+  case value {
+    Ok(text) ->
+      case string.trim(text) {
+        "" -> Error(Nil)
+        _ -> Ok(text)
+      }
+    Error(_) -> Error(Nil)
+  }
 }
 
 fn collect_metadata(

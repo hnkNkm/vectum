@@ -249,3 +249,149 @@ pub fn example_config_requires_env_test() {
     config.load_with("examples/router.toml", fn(_) { Error(Nil) })
   assert list.any(messages, fn(m) { string.contains(m, "environment variable") })
 }
+
+pub fn empty_destinations_are_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = []
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "at least one destination")
+  })
+}
+
+pub fn empty_inline_secret_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "empty hmac_secret") })
+}
+
+pub fn both_secrets_are_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret = \"inline\"
+hmac_secret_env = \"AUDIT_SECRET\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "both hmac_secret") })
+}
+
+pub fn empty_env_secret_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret_env = \"EMPTY_SECRET\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, fn(_) { Ok("") })
+  assert list.any(messages, fn(m) {
+    string.contains(m, "empty environment variable")
+  })
+}
+
+pub fn slash_source_name_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"a/b\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"a/b\"
+event = \"ping\"
+destinations = [\"ok\"]
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "must not contain") })
+}
+
+pub fn storage_path_loads_without_full_validation_test() {
+  // secret 欠落で full load は失敗するが、storage path だけは読める。
+  let toml =
+    "
+[storage]
+path = \"/data/router.db\"
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret_env = \"MISSING_SECRET\"
+"
+  let assert Error(_) = config.parse_with(toml, getenv)
+  let assert Ok(path) = config.parse_storage_path(toml)
+  assert path == "/data/router.db"
+}
+
+pub fn empty_route_name_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "route name must not be empty")
+  })
+}

@@ -53,13 +53,12 @@ cp examples/minimal.toml router.toml
 gleam run -- run --config router.toml
 ```
 
-別ターミナルからイベントを投入します。
+別ターミナルからイベントを投入します (`minimal.toml` の source `internal` 宛)。
 
 ```sh
-curl -i -X POST http://127.0.0.1:8080/events/github \
+curl -i -X POST http://127.0.0.1:8080/events/internal \
   -H 'Content-Type: application/json' \
-  -H 'X-GitHub-Event: push' \
-  -d '{"repository":{"name":"backend"},"ref":"refs/heads/main"}'
+  -d '{"type":"deploy","repository":{"name":"backend"},"ref":"refs/heads/main"}'
 ```
 
 永続化完了後に `202 Accepted` が返ります。

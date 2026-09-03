@@ -1,6 +1,7 @@
 import gleam/io
 import gleam/json
 import gleam/list
+import vectum/clock
 
 pub fn info(fields: List(#(String, String))) -> Nil {
   write("info", fields)
@@ -11,7 +12,11 @@ pub fn error(fields: List(#(String, String))) -> Nil {
 }
 
 fn write(level: String, fields: List(#(String, String))) -> Nil {
-  let pairs = [#("level", json.string(level)), ..to_json(fields)]
+  let pairs = [
+    #("level", json.string(level)),
+    #("time", json.string(clock.now_rfc3339())),
+    ..to_json(fields)
+  ]
   io.println(json.to_string(json.object(pairs)))
 }
 
