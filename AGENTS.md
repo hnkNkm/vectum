@@ -2,75 +2,90 @@
 
 ## Project Overview
 
-`vectum` (v0.1.0) is a lightweight, self-hosted event router on Gleam/BEAM.
-HTTP ingress → normalized Envelope → TOML-declared routes/filters/fan-out → HTTP destinations.
-SQLite-only at-least-once delivery with exp-backoff retry and dead-letter CLI.
-Single-node, offline-capable. Non-goals: broker/cluster, Web UI, hot reload, auto-retention.
+`vectum` v0.1.0 is a lightweight, self-hosted event router built with Gleam on the BEAM. HTTP webhooks are normalized into a common envelope, routed by TOML rules, and delivered to HTTP destinations. SQLite provides local persistence, at-least-once delivery, retries, and dead-letter operations without an external database.
+
+The supported deployment is single-node and offline-capable except for destination network access. There is no broker/cluster, web UI, hot reload, or automatic retention subsystem.
 
 ## Architecture & Data Flow
 
-- Ingress (`src/vectum/ingress.gleam`, `accept.gleam`): `mist` serves `GET /health|/ready|/metrics`, `POST /events/:source`. `persist_event` checks shutdown flag (→ 503), bounded body read, `accept.normalize` validates: unknown source → 404, content-type → 415, HMAC → 401, JSON/type → 400. `route.select_destinations` picks targets; `storage.call_accept` persists event + one `Delivery` row per destination atomically; returns `202 {id, accepted, deliveries}`.
-- Egress (`src/vectum/dispatcher.gleam`, `delivery.gleam`, `retry.gleam`): dispatcher actor self-sends `Tick` every 200ms, re-reads Store/Metrics from `registry` each tick, `capacity = concurrency - shutdown.active_workers()`, `call_claim_due`, spawns one BEAM process per delivery under `run_guarded` (always releases slot, even on panic). `process_one_inner`: fetch event → find destination → `delivery.build_outgoing` (envelope JSON + `X-Event-Id`/`Idempotency-Key` + optional HMAC) → `gleam_httpc` send → `retry.classify` (2xx success; 408/429/5xx/timeout/conn-err retry; else fail) → `mark_success/mark_retry/mark_dead` with capped exponential backoff + optional jitter.
-- Reaper: every 10s resets stale `delivering` rows (`cutoff = max(2 × longest destination timeout, 10s)`) to `pending`.
-- OTP (`src/vectum/supervisor.gleam`, `registry.gleam`, `shutdown.gleam`): `static_supervisor`, `OneForOne` (intensity 10/period 5) over Metrics → Storage → Dispatcher. Actor `Subject`s published to `persistent_term` registry; ingress/dispatcher re-read per request/tick, never cache across restarts. Boot `storage.open_and_recover` runs once; actor restarts must not re-recover.
-- Shutdown: SIGTERM/SIGINT → persistent_term flag (ingress 503, dispatcher stops claiming) → wait workers up to `$VECTUM_SHUTDOWN_GRACE_MS` (default 10s) → `halt(0)`.
-- Envelope: wire JSON key `time`, Gleam field `timestamp`; `[[sources]] path` parsed but ignored (always `POST /events/<name>`).
+- Boot: `src/vectum.gleam:main` passes argv to `src/vectum/app.gleam`. `run_server` loads and validates TOML, initializes shutdown state, performs one-time SQLite recovery, starts the OTP tree, then binds Mist.
+- Ingress: `src/vectum/ingress.gleam` serves `GET /health`, `/ready`, `/metrics`, and `POST /events/:source`. It resolves live actor references through `registry`, enforces shutdown admission and body limits, and maps typed rejection errors to HTTP status codes.
+- Admission: `src/vectum/accept.gleam` validates source/content type/HMAC/JSON/event type, normalizes metadata, and calls `route.select_destinations`. `storage.call_accept` atomically persists the event and one pending delivery per unique destination before returning `202`.
+- Core: `event`, `filter`, `route`, `config`, `hmac`, and `retry` are transport-independent value/validation modules. Keep HTTP, OTP, and FFI concerns at the edges.
+- Egress: `src/vectum/dispatcher.gleam` ticks every 200 ms, computes available concurrency, claims due rows, and runs guarded workers. `delivery.build_outgoing` creates the envelope and idempotency headers; results become success, retry with capped exponential backoff/jitter, or dead letter.
+- Runtime: `supervisor.gleam` owns Metrics, Storage, and Dispatcher under a `OneForOne` tree. `storage.gleam` serializes SQLite access. `registry.gleam` stores live actor subjects and must be consulted after restarts; do not cache subjects across actor death.
+- Shutdown: `shutdown.gleam` plus the Erlang signal handler stop new intake/claims, drain accepted requests and workers until `VECTUM_SHUTDOWN_GRACE_MS` (default 10 seconds), then halt.
 
 ## Key Directories
 
-- `src/vectum/`: flat modules only — keep it flat. Pure core (`event`, `filter`, `route`, `config`, `hmac`, `retry`, `storage` logic) vs OTP edge (`ingress`, `dispatcher`, `supervisor`, `registry`, `shutdown`).
-- `src/`: `vectum.gleam` entry, `vectum_ffi.erl` (persistent_term/atomics/signals/env), `vectum_signal_handler.erl`.
-- `test/`: 16 `*_test.gleam` files, gleeunit auto-discovery.
-- `examples/`: `minimal.toml` (secret-free) → `router.toml` (HMAC/filters) → `docker.toml` (container default).
-- `docs/`: spec; reading order in `docs/README.md`. `decisions.md` pins v0.1; `spec-compliance.md` lists intentional gaps.
+- `src/vectum/`: flat snake_case Gleam modules; pure domain modules and OTP/HTTP edge modules live side by side.
+- `src/`: executable entrypoint plus `vectum_ffi.erl` and `vectum_signal_handler.erl`.
+- `test/`: gleeunit tests, local fixtures, and `http_ffi.erl` for raw TCP ingress checks.
+- `examples/`: `minimal.toml` for secret-free validation, `router.toml` for HMAC/filter/fan-out, and `docker.toml` for container defaults.
+- `docs/`: specification and operational decisions; read `docs/README.md` for the intended order.
+- `.github/workflows/`: the test and formatting CI gate. `tmp/` and `/data` are runtime/test storage locations and are ignored.
 
 ## Development Commands
 
 ```sh
+direnv allow                         # or: nix develop
 gleam deps download
-gleam test                          # full suite (:memory: SQLite, no external services)
-gleam format --check src test       # CI gates this; fix with `gleam format src test`
-gleam run -- validate --config examples/minimal.toml
-gleam run -- run --config router.toml
+gleam test
+gleam test -- --target-logs         # gleeunit output
+gleam format --check src test       # CI gate
+gleam format src test               # apply formatting
 gleam build
-direnv allow                        # or: nix develop
-docker build -t vectum:0.1.0 .
-docker run -p 8080:8080 -v ./data:/data -v ./router.toml:/config/router.toml:ro vectum:0.1.0
+gleam run -- validate --config examples/minimal.toml
+cp examples/minimal.toml router.toml
+gleam run -- run --config router.toml
 ```
 
-Config resolution: `--config <path>` > `$VECTUM_CONFIG` > `./router.toml`.
-Secrets (`hmac_secret_env`, e.g. `GITHUB_WEBHOOK_SECRET`) must exist in env at `validate`/`run` time; see `.env.example`.
+The config precedence is `--config <path>` > `$VECTUM_CONFIG` > `./router.toml`. HMAC environment variables named by `hmac_secret_env` must be present when validating or running a config.
+
+For a local smoke request, run the server and post JSON to `http://127.0.0.1:8080/events/internal`. The compiled CLI supports `vectum run`, `validate`, `dead list`, `dead retry <delivery-id>`, and `dead delete <delivery-id>`; during development use `gleam run --` with the same arguments.
+
+Container commands:
+
+```sh
+docker build -t vectum:0.1.0 .
+docker run --rm -p 8080:8080 -v ./data:/data vectum:0.1.0
+```
 
 ## Code Conventions & Common Patterns
 
-- Flat modules under `src/vectum/`; e.g. `src/vectum/route.gleam`, not nested dirs.
-- Pure/testable core takes plain values; stub HTTP send as `fn(_outgoing) { delivery.Status(200) }` (see `test/integration_test.gleam`, `dispatcher_test.gleam`).
-- Error handling: `Result` + typed errors (`ConfigError`); ingress maps to HTTP codes, never raises. Tests use plain `assert` / `let assert`.
-- State: single `storage` actor serializes SQLite (`process.call`, 5s timeouts); `events`/`deliveries` tables, `unique(event_id, destination)`. Always re-read refs via `registry.gleam`, never stash `Subject`s.
-- Routing: `route.select_destinations` dedups per (event, destination); same-rule `[[routes.filters]]` are AND; `filter` ops `eq/neq/gt/gte/lt/lte/contains/exists/not_exists` over dotted paths (`event.get_path`), case-insensitive `parse_op`.
-- Outbound: always set `X-Event-Id` + `Idempotency-Key` (= event id); HMAC defaults — source header `X-Hub-Signature-256` (`sha256=<hex>`, bare hex accepted), dest header `X-Vectum-Signature`.
-- Logging: single-line JSON to stdout (`src/vectum/log.gleam`); `[log]` config section unimplemented — don't add.
-- FFI lives in `*_ffi.erl` + thin `env.gleam` wrapper (`get_env` → `os:getenv`).
+- Keep modules flat; use snake_case module/function names and PascalCase tagged unions/constructors.
+- Prefer pure functions over actor coupling. Return `Result` with typed errors; ingress translates errors to HTTP responses instead of raising.
+- Inject boundaries used by tests, such as environment lookup and outbound send functions. Stateful tests use real SQLite actors with `:memory:` databases and local stub closures.
+- Treat the Storage actor as the SQLite serialization boundary. Preserve transaction atomicity, the unique `(event_id, destination)` invariant, and `status = 'delivering'` guards on mark operations.
+- Routing uses exact or `*` event types, dotted paths, stable destination deduplication, and AND semantics for filters on one route. Metadata keys are normalized case-insensitively.
+- Outbound requests always include `Content-Type: application/json`, `X-Event-Id`, and `Idempotency-Key` (both IDs match); destination HMAC is optional.
+- Use `registry` lookups for actor references on every request/tick. FFI belongs in the Erlang `*_ffi.erl` files with a thin Gleam wrapper.
+- Logs are single-line JSON on stdout. `[log]` TOML configuration is not implemented; source `path` is parsed but ingress remains `/events/<name>`. Config changes require a restart.
 
 ## Important Files
 
-- Entry/boot: `src/vectum.gleam` (`main` → `app.run_command`), `src/vectum/app.gleam` (`run_server`/`validate`/`dead`), `src/vectum/cli.gleam` (`Run/Validate/DeadList/DeadRetry/DeadDelete` + table format).
-- Domain: `src/vectum/event.gleam` (Envelope/EventValue, `get_path`), `filter.gleam`, `route.gleam`, `accept.gleam`, `ingress.gleam`, `dispatcher.gleam`, `delivery.gleam`, `retry.gleam`, `storage.gleam`, `config.gleam`.
-- OTP/support: `supervisor.gleam`, `registry.gleam`, `shutdown.gleam`, `metrics.gleam`, `hmac.gleam`, `id.gleam` (UUIDv7 via `youid`), `clock.gleam`, `log.gleam`, `env.gleam`.
-- Config/tooling: `gleam.toml` (package `vectum`, Erlang target), `manifest.toml` (locked), `examples/minimal.toml|router.toml|docker.toml`, `.env.example`, `Dockerfile` (`gleam export erlang-shipment`, user `vectum`, `/config/router.toml`, `/data/router.db`), `flake.nix` + `.envrc`, `.github/workflows/test.yml`.
-- Docs: `README.md` (quickstart/API) → `docs/README.md` (index) → `overview/use-cases/architecture/event-model/ingress/routing/delivery/persistence/security/configuration/cli/observability/operations` → `decisions.md` + `spec-compliance.md`.
+- Boot and commands: `src/vectum.gleam`, `src/vectum/app.gleam`, `src/vectum/cli.gleam`.
+- HTTP/admission: `src/vectum/ingress.gleam`, `src/vectum/accept.gleam`.
+- Domain: `event.gleam`, `filter.gleam`, `route.gleam`, `config.gleam`, `hmac.gleam`, `retry.gleam`.
+- Persistence/delivery: `storage.gleam`, `dispatcher.gleam`, `delivery.gleam`.
+- OTP/runtime: `supervisor.gleam`, `registry.gleam`, `shutdown.gleam`, `metrics.gleam`, `env.gleam`, `clock.gleam`, and the Erlang FFI files.
+- Tooling and contracts: `gleam.toml`, `manifest.toml`, `flake.nix`, `Dockerfile`, `.env.example`, `examples/*.toml`, and `.github/workflows/test.yml`.
+- Product contract: `README.md` for quickstart/API; `docs/architecture.md`, `docs/decisions.md`, and `docs/spec-compliance.md` for design constraints and intentional gaps.
 
 ## Runtime/Tooling Preferences
 
-- Required: Gleam ≥1.18 (pinned 1.18.1), Erlang/OTP 27 runtime (CI uses OTP 29 + rebar3), Erlang target only.
-- Package manager: Hex via `gleam.toml`/`manifest.toml` (`mist`, `sqlight`/`esqlite`, `tom`, `argv`, `gleam_httpc`, `youid`). No npm/make/just.
-- SQLite NIF needs `sqlite` + `openssl` headers (`libsqlite3-dev` in CI; Nix flake provides them).
-- Docker: storage path must be under `/data` (runs as non-root `vectum`); override baked `/config/router.toml` via `$VECTUM_CONFIG` mount; exposed containers need source HMAC. Default destination placeholder fails until overridden.
+- Use the Erlang target only. `gleam.toml` requires Gleam `>= 1.18.0`; CI and Docker use Gleam `1.18.1`.
+- README/Docker require Erlang/OTP 27+; the Docker runtime is OTP 27, CI uses OTP 29, and Nix derives Erlang from its locked `nixos-unstable` package set.
+- Dependencies are Hex packages managed by Gleam; `manifest.toml` is the generated lockfile and should not be hand-edited. `sqlight` brings the `esqlite` NIF and rebar3 build path.
+- SQLite development headers/libraries are required (`libsqlite3-dev` in CI); Nix supplies SQLite/OpenSSL, compiler tools, rebar3, and Gleam tooling through `direnv`/`nix develop`.
+- There is no npm/pnpm/yarn/cargo workflow, Makefile, or project `justfile`. The Nix shell installs `just`, but no repository commands use it.
+- Docker runs as non-root user `vectum`; keep persistent SQLite under writable `/data`. Override `/config/router.toml` with `VECTUM_CONFIG` when deploying a real destination.
 
 ## Testing & QA
 
-- Framework: `gleeunit` only dev-dep; entry `test/vectum_test.gleam` calls `gleeunit.main()` which runs every `pub fn *_test` in `test/*_test.gleam`. No suites/helpers/mocks/coverage tooling.
-- Run: `gleam test` (full suite). No per-file target documented.
-- Patterns: pure units construct values inline (`event/filter/route/hmac/retry/config/delivery/metrics/cli`); stateful suites use real `:memory:` SQLite actors + stub send fns (`storage/integration/dispatcher/shutdown/supervisor`); timing tests poll via `wait_until` loops; `storage_test` uses gitignored `tmp/vectum-recover-test.db`.
-- CI (`.github/workflows/test.yml`): `gleam deps download` → `gleam test` → `gleam format --check src test`.
-- Coverage expectation: per-module happy-path (`let assert`) + negative rejects (e.g. `config_test` unknown source/dest, bad URL/filter op/missing env; `accept_test` 404/415/400/401); no coverage gate.
+- Framework: gleeunit, entered through `test/vectum_test.gleam` calling `gleeunit.main()`. There are 18 `*_test.gleam` files (17 test modules plus the runner) with 110 exported `pub fn *_test` tests.
+- Run `gleam test` for the full suite; no per-file command, coverage configuration, upload, or minimum coverage gate is documented.
+- Pure tests construct `Event`, filters, routes, retry policies, config TOML, HMAC inputs, and CLI values inline. Stateful tests use real `sqlight` `:memory:` connections/actors, injected send closures, process kills, panic closures, and bounded polling helpers.
+- Test isolation is explicit because gleeunit has no shared setup/teardown. File-backed cases clean `tmp/vectum-{recover,wal,durability,corrupt}-test.db` and SQLite sidecars.
+- Ingress tests start real Mist listeners on fixed localhost ports `18771`–`18773` and send raw TCP requests. One delivery test intentionally attempts `127.0.0.1:9`; the suite is mostly local but is not purely in-memory.
+- CI (`.github/workflows/test.yml`) provisions OTP 29, Gleam 1.18.1, rebar3, and SQLite headers, then runs `gleam deps download`, `gleam test`, and `gleam format --check src test`.
