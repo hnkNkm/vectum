@@ -395,3 +395,69 @@ destinations = [\"ok\"]
     string.contains(m, "route name must not be empty")
   })
 }
+
+// --- Task A: hmac_header の空・空白 reject ---
+
+pub fn empty_source_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_header = \"\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn blank_source_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_header = \"   \"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn empty_destination_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+hmac_header = \"\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn blank_destination_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+hmac_header = \"  \"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}

@@ -549,11 +549,13 @@ fn validate_source(source: Source) -> List(String) {
     ]
     _, _, _ -> []
   }
-  list.append(name_errors, type_errors)
+  let hmac_errors =
+    validate_hmac_header(source.hmac_header, "source " <> source.name)
+  list.append(name_errors, list.append(type_errors, hmac_errors))
 }
 
 fn validate_destination(destination: Destination) -> List(String) {
-  let HttpDestination(name:, url:, timeout_ms:, ..) = destination
+  let HttpDestination(name:, url:, timeout_ms:, hmac_header:, ..) = destination
   let url_errors = case uri.parse(url) {
     Error(_) -> ["destination " <> name <> " has invalid URL"]
     Ok(parsed) ->
@@ -573,7 +575,17 @@ fn validate_destination(destination: Destination) -> List(String) {
     Some(ms) if ms >= 1 -> []
     Some(_) -> ["destination " <> name <> " timeout_ms must be >= 1"]
   }
-  list.append(url_errors, timeout_errors)
+  let hmac_errors = validate_hmac_header(hmac_header, "destination " <> name)
+  list.append(url_errors, list.append(timeout_errors, hmac_errors))
+}
+
+/// 空・空白のみの hmac_header は検証・署名ヘッダとして無意味 (空ヘッダ名は
+/// 照合不能 / 不正な wire header になる) ため config 時に落とす。
+fn validate_hmac_header(header: String, subject: String) -> List(String) {
+  case string.trim(header) {
+    "" -> [subject <> " hmac_header must not be empty"]
+    _ -> []
+  }
 }
 
 fn validate_route(
