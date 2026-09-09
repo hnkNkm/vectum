@@ -576,3 +576,358 @@ pub fn read_queries_do_not_mutate_state_test() {
   let assert Ok(due) = storage.claim_due(conn, 5000, 2)
   assert list.contains(list.map(due, fn(d) { d.id }), claimed.id)
 }
+
+// --- #30: retention prune ---
+
+const day_ms = 86_400_000
+
+/// 任意の受信時刻で Event を直接挿入する(テストの時刻制御用)。
+fn insert_event_at(
+  conn: sqlight.Connection,
+  id: String,
+  received_at: Int,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into events
+       (id, source, event_type, timestamp, received_at, payload, metadata)
+       values (?, 'github', 'push', '2026-01-01T00:00:00.000Z', ?, '{}', '{}')",
+      on: conn,
+      with: [sqlight.text(id), sqlight.int(received_at)],
+      expecting: decode.success(Nil),
+    )
+  Nil
+}
+
+/// 任意の status / updated_at で Delivery を直接挿入する。
+fn insert_delivery_at(
+  conn: sqlight.Connection,
+  id: String,
+  event_id: String,
+  destination: String,
+  status: String,
+  updated_at: Int,
+) -> Nil {
+  let assert Ok(_) =
+    sqlight.query(
+      "insert into deliveries
+       (id, event_id, destination, status, attempts, next_attempt_at,
+        last_attempt_at, last_error, created_at, updated_at)
+       values (?, ?, ?, ?, 0, 0, null, null, ?, ?)",
+      on: conn,
+      with: [
+        sqlight.text(id),
+        sqlight.text(event_id),
+        sqlight.text(destination),
+        sqlight.text(status),
+        sqlight.int(updated_at),
+        sqlight.int(updated_at),
+      ],
+      expecting: decode.success(Nil),
+    )
+  Nil
+}
+
+/// 日数基準の共通 seed。now = 100 日前の epoch とし、prune は
+/// succeeded 10 日 / dead_letter 30 日 / events 20 日より古い行を対象にする
+/// (cutoff: 90 / 70 / 80 日前 epoch)。削除されない行:
+/// 新しい terminal、cutoff ちょうど、未完了、参照付き Event、新しい孤児。
+/// 期待される削除件数 #(succeeded, dead_letter, events) を返す。
+fn seed_prune_db(conn: sqlight.Connection) -> #(Int, Int, Int) {
+  let now = 100 * day_ms
+  let ago = fn(days_old: Int) { now - days_old * day_ms }
+  // 古い succeeded(削除対象)
+  insert_event_at(conn, "e-succ-old", ago(15))
+  insert_delivery_at(
+    conn,
+    "d-succ-old",
+    "e-succ-old",
+    "ci",
+    "succeeded",
+    ago(40),
+  )
+  // 新しい succeeded(残る)
+  insert_event_at(conn, "e-succ-new", ago(5))
+  insert_delivery_at(
+    conn,
+    "d-succ-new",
+    "e-succ-new",
+    "ci",
+    "succeeded",
+    ago(5),
+  )
+  // cutoff ちょうどは `<` のため残る
+  insert_event_at(conn, "e-succ-edge", ago(10))
+  insert_delivery_at(
+    conn,
+    "d-succ-edge",
+    "e-succ-edge",
+    "ci",
+    "succeeded",
+    ago(10),
+  )
+  // 古い dead_letter(削除対象)
+  insert_event_at(conn, "e-dead-old", ago(50))
+  insert_delivery_at(
+    conn,
+    "d-dead-old",
+    "e-dead-old",
+    "ci",
+    "dead_letter",
+    ago(40),
+  )
+  // 新しい dead_letter(残る)
+  insert_event_at(conn, "e-dead-new", ago(25))
+  insert_delivery_at(
+    conn,
+    "d-dead-new",
+    "e-dead-new",
+    "ci",
+    "dead_letter",
+    ago(25),
+  )
+  // 未完了は古くても絶対に残る
+  insert_event_at(conn, "e-rsv-old", ago(70))
+  insert_delivery_at(
+    conn,
+    "d-rsv-old",
+    "e-rsv-old",
+    "ci",
+    "retry_scheduled",
+    ago(70),
+  )
+  insert_event_at(conn, "e-open-old", ago(70))
+  insert_delivery_at(conn, "d-open-old", "e-open-old", "ci", "pending", ago(70))
+  // 孤児 Event: 古いのは削除、新しいのは残る
+  insert_event_at(conn, "e-orphan-old", ago(70))
+  insert_event_at(conn, "e-orphan-fresh", ago(5))
+  // succeeded 削除で孤児化する古い Event(同一 tx 内で削除される)
+  insert_event_at(conn, "e-free-old", ago(60))
+  insert_delivery_at(
+    conn,
+    "d-free-old",
+    "e-free-old",
+    "ci",
+    "succeeded",
+    ago(60),
+  )
+  #(2, 1, 3)
+}
+
+pub fn retention_disabled_keeps_everything_test() {
+  use conn <- with_db
+  seed_prune_db(conn)
+  let assert Ok(counts) =
+    storage.prune(conn, 100 * day_ms, storage.Retention(0, 0, 0))
+  assert counts == storage.PruneCounts(succeeded: 0, dead_letter: 0, events: 0)
+  assert storage.retention_enabled(storage.Retention(0, 0, 0)) == False
+  assert storage.retention_enabled(storage.Retention(1, 0, 0)) == True
+  assert storage.retention_enabled(storage.Retention(0, 0, 30)) == True
+  // 何も消えていない
+  let assert Ok(succ) =
+    storage.list_deliveries(conn, Some(storage.Succeeded), None, 100)
+  assert list.length(succ) == 4
+}
+
+pub fn prune_deletes_only_expired_terminal_rows_test() {
+  use conn <- with_db
+  let #(expected_succ, expected_dead, expected_events) = seed_prune_db(conn)
+  let assert Ok(counts) =
+    storage.prune(
+      conn,
+      100 * day_ms,
+      storage.Retention(
+        succeeded_days: 10,
+        dead_letter_days: 30,
+        events_days: 20,
+      ),
+    )
+  assert counts
+    == storage.PruneCounts(
+      succeeded: expected_succ,
+      dead_letter: expected_dead,
+      events: expected_events,
+    )
+
+  // 残る Delivery: 新しい terminal と未完了だけ
+  let assert Ok(succ) =
+    storage.list_deliveries(conn, Some(storage.Succeeded), None, 100)
+  let succ_ids = list.map(succ, fn(d) { d.id })
+  assert list.length(succ_ids) == 2
+  assert list.contains(succ_ids, "d-succ-new")
+  assert list.contains(succ_ids, "d-succ-edge")
+  let assert Ok(dead) =
+    storage.list_deliveries(conn, Some(storage.DeadLetter), None, 100)
+  assert list.map(dead, fn(d) { d.id }) == ["d-dead-new"]
+  let assert Ok(pending) =
+    storage.list_deliveries(conn, Some(storage.Pending), None, 100)
+  assert list.map(pending, fn(d) { d.id }) == ["d-open-old"]
+  let assert Ok(rsv) =
+    storage.list_deliveries(conn, Some(storage.RetryScheduled), None, 100)
+  assert list.map(rsv, fn(d) { d.id }) == ["d-rsv-old"]
+
+  // 残る Event: 未完了 Delivery が残る古いもの、新しいもの、孤児でないもの
+  let assert Ok(events) = storage.list_events(conn, None, None, 100)
+  let event_ids = list.map(events, fn(e) { e.id })
+  assert list.length(event_ids) == 7
+  list.each(
+    [
+      "e-dead-new", "e-open-old", "e-orphan-fresh", "e-rsv-old", "e-succ-edge",
+      "e-succ-new", "e-succ-old",
+    ],
+    fn(id) {
+      assert list.contains(event_ids, id)
+    },
+  )
+}
+
+/// Event を参照する Delivery が 1 件でも残っていれば、Event は古くても
+/// 削除されない(succeeded の行だけ消える)。
+pub fn prune_keeps_events_with_remaining_deliveries_test() {
+  use conn <- with_db
+  let now = 100 * day_ms
+  let ago = fn(days: Int) { now - days * day_ms }
+  insert_event_at(conn, "e-mixed", ago(100))
+  insert_delivery_at(
+    conn,
+    "d-mixed-succ",
+    "e-mixed",
+    "ci",
+    "succeeded",
+    ago(100),
+  )
+  insert_delivery_at(
+    conn,
+    "d-mixed-open",
+    "e-mixed",
+    "audit",
+    "pending",
+    ago(100),
+  )
+  let assert Ok(counts) =
+    storage.prune(
+      conn,
+      now,
+      storage.Retention(
+        succeeded_days: 10,
+        dead_letter_days: 30,
+        events_days: 1,
+      ),
+    )
+  // succeeded の行は消えるが、pending が残るため Event は残る
+  assert counts == storage.PruneCounts(succeeded: 1, dead_letter: 0, events: 0)
+  let assert Ok(event) = storage.get_event(conn, "e-mixed")
+  assert event.id == "e-mixed"
+  let assert Ok(open) =
+    storage.list_deliveries(conn, Some(storage.Pending), None, 100)
+  assert list.map(open, fn(d) { d.id }) == ["d-mixed-open"]
+}
+
+pub fn prune_dry_run_reports_counts_without_mutating_test() {
+  use conn <- with_db
+  seed_prune_db(conn)
+  let retention =
+    storage.Retention(succeeded_days: 10, dead_letter_days: 30, events_days: 20)
+  let assert Ok(rows) =
+    sqlight.query(
+      "select count(*) from deliveries",
+      on: conn,
+      with: [],
+      expecting: {
+        use n <- decode.field(0, decode.int)
+        decode.success(n)
+      },
+    )
+  let assert Ok(events_rows) =
+    sqlight.query(
+      "select count(*) from events",
+      on: conn,
+      with: [],
+      expecting: {
+        use n <- decode.field(0, decode.int)
+        decode.success(n)
+      },
+    )
+  let before_deliveries = case rows {
+    [n] -> n
+    _ -> 0
+  }
+  let before_events = case events_rows {
+    [n] -> n
+    _ -> 0
+  }
+
+  // dry-run は実 prune と同じ件数を報告する
+  let assert Ok(first) = storage.prune_dry_run(conn, 100 * day_ms, retention)
+  assert first == storage.PruneCounts(succeeded: 2, dead_letter: 1, events: 3)
+  // 何も消えていないため 2 回目も同じ件数
+  let assert Ok(second) = storage.prune_dry_run(conn, 100 * day_ms, retention)
+  assert second == first
+
+  // 行数が完全に不変
+  let assert Ok(rows_after) =
+    sqlight.query(
+      "select count(*) from deliveries",
+      on: conn,
+      with: [],
+      expecting: {
+        use n <- decode.field(0, decode.int)
+        decode.success(n)
+      },
+    )
+  let assert Ok(events_after) =
+    sqlight.query(
+      "select count(*) from events",
+      on: conn,
+      with: [],
+      expecting: {
+        use n <- decode.field(0, decode.int)
+        decode.success(n)
+      },
+    )
+  assert rows_after == [before_deliveries]
+  assert events_after == [before_events]
+
+  // dry-run の後に実 prune すると同じ件数だけ消える
+  let assert Ok(pruned) = storage.prune(conn, 100 * day_ms, retention)
+  assert pruned == first
+}
+
+/// prune 中に 1 文でも失敗したら全体がロールバックされ、状態が変わらない。
+pub fn failed_prune_rolls_back_entire_transaction_test() {
+  use conn <- with_db
+  // 特定 Delivery の削除を abort で失敗させる trigger
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "create trigger fail_poison before delete on deliveries
+       when old.id = 'd-poison'
+       begin
+         select raise(abort, 'poison');
+       end",
+      conn,
+    )
+  let now = 100 * day_ms
+  let ago = fn(days: Int) { now - days * day_ms }
+  insert_event_at(conn, "e-clean", ago(50))
+  insert_delivery_at(conn, "d-clean", "e-clean", "ci", "succeeded", ago(60))
+  insert_event_at(conn, "e-poison", ago(40))
+  insert_delivery_at(conn, "d-poison", "e-poison", "ci", "dead_letter", ago(50))
+
+  let assert Error(_) =
+    storage.prune(
+      conn,
+      now,
+      storage.Retention(
+        succeeded_days: 10,
+        dead_letter_days: 30,
+        events_days: 20,
+      ),
+    )
+  // succeeded の先頭削除は成功していたはずだが、tx 全体が巻き戻る
+  let assert Ok(d_clean) = storage.get_delivery(conn, "d-clean")
+  assert d_clean.status == storage.Succeeded
+  let assert Ok(d_poison) = storage.get_delivery(conn, "d-poison")
+  assert d_poison.status == storage.DeadLetter
+  let assert Ok(_) = storage.get_event(conn, "e-clean")
+  let assert Ok(_) = storage.get_event(conn, "e-poison")
+}

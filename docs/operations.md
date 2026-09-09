@@ -58,6 +58,45 @@ vectum deliveries show <delivery-id> --config router.toml
 サーバー稼働中でも WAL モードのため読み取りは可能。参照コマンドは
 SELECT のみで、retry や削除などの操作は `dead retry` / `dead delete` を使う。
 
+## 保持期間と prune (#30)
+
+`[retention]` を設定すると、完了済みデータを保持日数後に自動削除できる
+(未設定・0 なら無期限保持)。dispatcher が 1 時間に最大 1 回、
+次のルールで削除する。
+
+- `succeeded` の Delivery: `updated_at` が `succeeded_days` より古い行
+- `dead_letter` の Delivery: `updated_at` が `dead_letter_days` より古い行
+- Event: `received_at` が `events_days` より古く、参照する Delivery が
+  残っていない孤児だけ
+
+`pending` / `delivering` / `retry_scheduled` は削除しない。削除は 1
+トランザクション(Delivery → 孤児 Event の順)で、失敗時は全体が
+ロールバックされる。実行はログ `retention_pruned`、メトリクス
+`retention_deleted_deliveries_total` / `retention_deleted_events_total`
+で観測できる。
+
+手動実行もできる(HMAC secret 不要。`[storage] path` と `[retention]` だけ読む)。
+
+```bash
+# 削除せずに対象件数だけ確認する
+vectum prune --dry-run --config router.toml
+
+# 実際に削除する
+vectum prune --config router.toml
+```
+
+サーバー稼働中でも WAL モードで並行実行できる(busy timeout 内に待機)。
+
+```toml
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
+```
+
+保持期間の意味論は [persistence.md](./persistence.md)、設定の詳細は
+[configuration.md](./configuration.md)。
+
 ## Graceful Shutdown
 
 SIGTERM / SIGINT を受けると次の順で停止する。

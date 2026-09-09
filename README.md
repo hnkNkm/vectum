@@ -19,6 +19,7 @@ Amazon EventBridge の完全互換実装ではありません。Kafka / RabbitMQ
 - Exponential backoff + jitter による retry
 - Dead letter と CLI からの再配送
 - SQLite 永続化 (外部 DB 不要)
+- 自動 retention / 手動 prune (`vectum prune`、#30)
 - HMAC 検証 / 署名
 - Prometheus 互換メトリクス
 - TOML 設定と CLI
@@ -78,6 +79,7 @@ vectum events list [--source S] [--type T] [--limit N] --config router.toml
 vectum events show <event-id> --config router.toml
 vectum deliveries list [--status S] [--destination D] [--limit N] --config router.toml
 vectum deliveries show <delivery-id> --config router.toml
+vectum prune [--dry-run] --config router.toml
 ```
 
 開発中は `gleam run --` のあとに同じサブコマンドを渡せます。
@@ -120,6 +122,12 @@ timeout_ms = 10000
 initial_backoff_ms = 1000
 max_backoff_ms = 60000
 jitter = true
+
+# 完了済みデータの保持日数(未設定 / 0 は無期限保持)
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
 ```
 
 起動時に設定全体を検証し、不正があればプロセスを終了します。

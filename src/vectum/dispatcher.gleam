@@ -13,7 +13,9 @@ import vectum/log
 import vectum/metrics.{type Metrics}
 import vectum/registry
 import vectum/shutdown
-import vectum/storage.{type Delivery, type Store}
+import vectum/storage.{
+  type Delivery, type PruneCounts, type Retention, type Store,
+}
 
 /// body を実行し、例外(panic)があっても必ず after を呼んでから返す。
 /// ワーカー枠の解放を panic でも保証するためのガード。
@@ -26,6 +28,9 @@ const poll_interval_ms = 200
 
 /// reap チェック間隔(ミリ秒)。
 const reap_interval_ms = 10_000
+
+/// retention prune の実行間隔(ミリ秒)。1 時間に最大 1 回。
+const retention_interval_ms = 3_600_000
 
 /// delivering が滞留と見なすまでの時間。
 /// Destination の実効タイムアウト(個別指定、無ければ [delivery].timeout_ms)
@@ -45,6 +50,7 @@ type State {
     send: fn(Outgoing) -> SendResult,
     self: Subject(Msg),
     last_reap_ms: Int,
+    last_retention_ms: Int,
   )
 }
 
@@ -66,6 +72,7 @@ pub fn start_supervised(
       send:,
       self: subject,
       last_reap_ms: clock.now_ms(),
+      last_retention_ms: clock.now_ms(),
     ))
     |> actor.returning(Nil)
     |> Ok
@@ -88,6 +95,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
               ])
           }
           let state = reap_if_due(state, store, metrics)
+          let state = prune_if_due(state, store, metrics)
           let _ = process.send_after(state.self, poll_interval_ms, Tick)
           actor.continue(state)
         }
@@ -122,6 +130,48 @@ fn reap_if_due(state: State, store: Store, metrics: Metrics) -> State {
       State(..state, last_reap_ms: now)
     }
   }
+}
+
+/// 自動 prune の実行判定(retention 設定の有無と、前回実行からの経過)。
+/// `last_run_ms` を注入できるため、時間を止めたテストが書ける。
+pub fn prune_due(retention: Retention, now_ms: Int, last_run_ms: Int) -> Bool {
+  storage.retention_enabled(retention)
+  && now_ms - last_run_ms >= retention_interval_ms
+}
+
+/// [retention] が設定されていれば、1 時間に最大 1 回 prune を通す。
+fn prune_if_due(state: State, store: Store, metrics: Metrics) -> State {
+  let now = clock.now_ms()
+  case prune_due(state.config.retention, now, state.last_retention_ms) {
+    False -> state
+    True -> {
+      case storage.call_prune(store, now, state.config.retention) {
+        Ok(counts) -> {
+          log_retention_pruned(counts)
+          metrics.record_retention_deleted(
+            metrics,
+            counts.succeeded + counts.dead_letter,
+            counts.events,
+          )
+        }
+        Error(error) ->
+          log.error([
+            #("msg", "retention_prune_failed"),
+            #("error", string.inspect(error)),
+          ])
+      }
+      State(..state, last_retention_ms: now)
+    }
+  }
+}
+
+fn log_retention_pruned(counts: PruneCounts) -> Nil {
+  log.info([
+    #("msg", "retention_pruned"),
+    #("succeeded", int.to_string(counts.succeeded)),
+    #("dead_letter", int.to_string(counts.dead_letter)),
+    #("events", int.to_string(counts.events)),
+  ])
 }
 
 pub fn tick(

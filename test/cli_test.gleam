@@ -179,6 +179,53 @@ pub fn help_text_lists_read_only_commands_test() {
   assert string.contains(text, "--limit")
 }
 
+// --- #30: prune ---
+pub fn parse_prune_commands_test() {
+  let assert cli.Prune("router.toml", False) = cli.parse(["prune"])
+  let assert cli.Prune("router.toml", True) = cli.parse(["prune", "--dry-run"])
+  let assert cli.Prune("c.toml", True) =
+    cli.parse(["prune", "--dry-run", "--config", "c.toml"])
+  let assert cli.Prune("c.toml", True) =
+    cli.parse(["--config=c.toml", "prune", "--dry-run"])
+  let assert cli.Prune("router.toml", False) =
+    cli.parse(["prune", "--config", "router.toml"])
+}
+
+pub fn parse_rejects_flags_on_prune_test() {
+  // prune は --dry-run 以外のフラグを受け付けない
+  let assert cli.Usage(_) = cli.parse(["prune", "--limit", "5"])
+  let assert cli.Usage(_) = cli.parse(["prune", "--dry-run", "--source", "x"])
+  let assert cli.Usage(_) = cli.parse(["prune", "extra-arg"])
+  // 他コマンドは --dry-run を受け付けない
+  let assert cli.Usage(_) = cli.parse(["run", "--dry-run"])
+}
+
+pub fn help_text_lists_prune_test() {
+  let text = cli.help_text()
+  assert string.contains(text, "vectum prune")
+  assert string.contains(text, "--dry-run")
+}
+
+pub fn format_prune_output_test() {
+  let counts = storage.PruneCounts(succeeded: 3, dead_letter: 1, events: 2)
+  let real = cli.format_prune(counts, False)
+  assert string.contains(real, "succeeded_deliveries\t3")
+  assert string.contains(real, "dead_letter_deliveries\t1")
+  assert string.contains(real, "events\t2")
+  assert string.contains(real, "deleted 4 deliveries and 2 events")
+
+  let dry = cli.format_prune(counts, True)
+  assert string.contains(dry, "would delete 4 deliveries and 2 events")
+  assert string.contains(dry, "no changes made")
+
+  let zero =
+    cli.format_prune(
+      storage.PruneCounts(succeeded: 0, dead_letter: 0, events: 0),
+      True,
+    )
+  assert string.contains(zero, "would delete 0 deliveries and 0 events")
+}
+
 fn sample_event(id: String) {
   event.Event(
     id:,

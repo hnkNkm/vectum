@@ -5,6 +5,7 @@ import gleam/string
 import vectum/config
 import vectum/event
 import vectum/filter
+import vectum/storage
 
 const valid = "
 [server]
@@ -942,4 +943,169 @@ filters = [
     string.contains(w, "unknown config key in route r condition filters[1]")
     && string.contains(w, "bogus_leaf_key")
   })
+}
+
+// --- #30: [retention] ---
+
+/// source / destination が揃った最小 TOML の雛形。body に設定を足す。
+fn retention_toml(body: String) -> String {
+  "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+" <> body
+}
+
+pub fn retention_parses_and_defaults_to_keep_forever_test() {
+  // セクション未設定なら全 0(無期限保持)
+  let assert Ok(parsed) = config.parse_with(valid, getenv)
+  assert parsed.retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+
+  // 明示設定はそのまま読まれる
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
+",
+    )
+  let assert Ok(parsed2) = config.parse_with(toml, getenv)
+  assert parsed2.retention
+    == storage.Retention(
+      succeeded_days: 7,
+      dead_letter_days: 90,
+      events_days: 30,
+    )
+  // 既知キーのみなので警告なし
+  assert parsed2.warnings == []
+}
+
+pub fn retention_zero_is_keep_forever_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 0
+dead_letter_days = 0
+events_days = 0
+",
+    )
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert parsed.retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+}
+
+pub fn negative_retention_days_are_rejected_test() {
+  let keys = ["succeeded_days", "dead_letter_days", "events_days"]
+  assert list.all(keys, fn(key) {
+    let toml = retention_toml("
+[retention]
+" <> key <> " = -1
+")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) {
+      string.contains(m, "retention." <> key) && string.contains(m, ">= 0")
+    })
+  })
+}
+
+pub fn non_integer_retention_days_are_rejected_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = \"seven\"
+",
+    )
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "retention.succeeded_days")
+  })
+}
+
+pub fn unknown_retention_key_is_warned_not_rejected_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 7
+bogus_retention_key = true
+",
+    )
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert parsed.retention.succeeded_days == 7
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in [retention]")
+    && string.contains(w, "bogus_retention_key")
+  })
+}
+
+/// `load_retention` は secret 検証エラーの設定でも `[storage] path` と
+/// `[retention]` を読める(prune 用)。
+pub fn load_retention_reads_storage_and_retention_without_secrets_test() {
+  let toml =
+    "
+[storage]
+path = \"/data/router.db\"
+[retention]
+succeeded_days = 3
+dead_letter_days = 5
+events_days = 7
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret_env = \"MISSING_SECRET\"
+"
+  // full load は secret 欠落で失敗する
+  let assert Error(_) = config.parse_with(toml, getenv)
+  let assert Ok(#(path, retention)) = config.parse_retention(toml)
+  assert path == "/data/router.db"
+  assert retention
+    == storage.Retention(succeeded_days: 3, dead_letter_days: 5, events_days: 7)
+}
+
+pub fn load_retention_defaults_when_section_absent_test() {
+  let toml =
+    "
+[storage]
+path = \"/data/router.db\"
+"
+  let assert Ok(#(path, retention)) = config.parse_retention(toml)
+  assert path == "/data/router.db"
+  assert retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+}
+
+pub fn load_retention_rejects_negative_and_invalid_toml_test() {
+  let negative =
+    "
+[retention]
+events_days = -3
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_retention(negative)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "retention.events_days")
+  })
+
+  let assert Error(_) = config.parse_retention("not toml [")
+}
+
+pub fn load_retention_ignores_unknown_retention_keys_test() {
+  let toml =
+    "
+[retention]
+succeeded_days = 1
+future_option = true
+"
+  let assert Ok(#(_path, retention)) = config.parse_retention(toml)
+  assert retention.succeeded_days == 1
 }

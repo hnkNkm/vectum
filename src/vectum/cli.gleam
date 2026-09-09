@@ -29,6 +29,8 @@ pub type Command {
     limit: Int,
   )
   DeliveriesShow(config: String, id: String)
+  // #30: retention prune
+  Prune(config: String, dry_run: Bool)
   Help
   Usage(String)
 }
@@ -42,6 +44,7 @@ type Flags {
     destination: Option(String),
     status_raw: Option(String),
     limit_raw: Option(String),
+    dry_run: Bool,
   )
 }
 
@@ -52,6 +55,7 @@ fn empty_flags() -> Flags {
     destination: None,
     status_raw: None,
     limit_raw: None,
+    dry_run: False,
   )
 }
 
@@ -124,6 +128,8 @@ fn parse_command(
       }
     ["deliveries", "show", id] ->
       check_flags(flags, [], DeliveriesShow(config, id))
+    ["prune"] ->
+      check_flags(flags, ["--dry-run"], Prune(config:, dry_run: flags.dry_run))
     ["-h"] | ["--help"] | ["help"] -> Help
     other -> Usage("unknown arguments: " <> string.join(other, " "))
   }
@@ -206,6 +212,8 @@ fn remove_flags(
       remove_flags(rest, kept, Flags(..flags, status_raw: Some(value)))
     ["--limit", value, ..rest] ->
       remove_flags(rest, kept, Flags(..flags, limit_raw: Some(value)))
+    ["--dry-run", ..rest] ->
+      remove_flags(rest, kept, Flags(..flags, dry_run: True))
     [head, ..tail] -> remove_flags(tail, [head, ..kept], flags)
   }
 }
@@ -260,6 +268,7 @@ fn check_flags(
     #("--destination", present(flags.destination)),
     #("--status", present(flags.status_raw)),
     #("--limit", present(flags.limit_raw)),
+    #("--dry-run", flags.dry_run),
   ]
   case list.find(used, fn(pair) { pair.1 && !list.contains(allowed, pair.0) }) {
     Ok(pair) -> Usage("unexpected flag " <> pair.0 <> " for this command")
@@ -290,8 +299,11 @@ pub fn help_text() -> String {
       "  vectum dead list [--config router.toml]",
       "  vectum dead retry <delivery-id> [--config router.toml]",
       "  vectum dead delete <delivery-id> [--config router.toml]",
+      "  vectum prune [--dry-run] [--config router.toml]",
       "",
       "status / events / deliveries は読み取り専用で、状態を変更しない。",
+      "prune は [retention] の保持日数を過ぎた succeeded / dead_letter の",
+      "Delivery と孤児 Event を削除する(--dry-run は削除せず件数だけ表示)。",
       "--limit は既定 50、上限 1000。",
     ],
     "\n",
@@ -377,6 +389,33 @@ fn format_row(delivery: Delivery) -> String {
   )
 }
 
+/// prune の実行結果 / dry-run の予測件数。区分別の TSV 行と 1 行のサマリ。
+pub fn format_prune(counts: storage.PruneCounts, dry_run: Bool) -> String {
+  let storage.PruneCounts(succeeded:, dead_letter:, events:) = counts
+  let deliveries = succeeded + dead_letter
+  let summary = case dry_run {
+    True ->
+      "would delete "
+      <> int.to_string(deliveries)
+      <> " deliveries and "
+      <> int.to_string(events)
+      <> " events (dry-run; no changes made)"
+    False ->
+      "deleted "
+      <> int.to_string(deliveries)
+      <> " deliveries and "
+      <> int.to_string(events)
+      <> " events"
+  }
+  [
+    "succeeded_deliveries\t" <> int.to_string(succeeded),
+    "dead_letter_deliveries\t" <> int.to_string(dead_letter),
+    "events\t" <> int.to_string(events),
+    summary,
+  ]
+  |> string.join("\n")
+}
+
 pub fn format_events(events: List(event.Event)) -> String {
   case events {
     [] -> "no events"
@@ -451,6 +490,7 @@ pub fn take_config(command: Command) -> Option(String) {
   case command {
     Run(path) | Validate(path) | DeadList(path) | Status(path) -> Some(path)
     DeadRetry(path, _) | DeadDelete(path, _) -> Some(path)
+    Prune(path, _) -> Some(path)
     EventsList(path, _, _, _) | EventsShow(path, _) -> Some(path)
     DeliveriesList(path, _, _, _) | DeliveriesShow(path, _) -> Some(path)
     Help | Usage(_) -> None

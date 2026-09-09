@@ -12,6 +12,7 @@ import vectum/event.{type EventValue}
 import vectum/filter.{type Condition, type ConditionNode, type Filter, Filter}
 import vectum/retry.{type Policy, Policy}
 import vectum/route.{type Route, Route}
+import vectum/storage.{type Retention, Retention}
 
 pub type Config {
   Config(
@@ -22,6 +23,8 @@ pub type Config {
     routes: List(Route),
     delivery: Policy,
     concurrency: Int,
+    /// `[retention]` 設定。日数 0 は無期限保持(既定)。
+    retention: Retention,
     /// 未知キーなど失敗させない非致命的な検出内容。validate / run 時に stderr へ出す。
     warnings: List(String),
   )
@@ -152,6 +155,7 @@ fn decode_config(
   let server = decode_server(doc)
   let storage = decode_storage(doc)
   let delivery = decode_delivery(doc)
+  let retention = decode_retention(doc)
   let sources = decode_sources(doc, getenv)
   let destinations = decode_destinations(doc, getenv)
   let routes = decode_routes(doc)
@@ -161,16 +165,27 @@ fn decode_config(
       result_errors(server),
       result_errors(storage),
       result_errors(delivery),
+      result_errors(retention),
       result_errors(sources),
       result_errors(destinations),
       result_errors(routes),
     ])
 
-  case errors, server, storage, delivery, sources, destinations, routes {
+  case
+    errors,
+    server,
+    storage,
+    delivery,
+    retention,
+    sources,
+    destinations,
+    routes
+  {
     [],
       Ok(server),
       Ok(storage),
       Ok(#(policy, concurrency)),
+      Ok(retention),
       Ok(sources),
       Ok(destinations),
       Ok(routes)
@@ -184,6 +199,7 @@ fn decode_config(
           routes:,
           delivery: policy,
           concurrency:,
+          retention:,
           warnings: [],
         )
       case validate(config) {
@@ -191,7 +207,7 @@ fn decode_config(
         messages -> Error(ConfigError(messages))
       }
     }
-    _, _, _, _, _, _, _ -> Error(ConfigError(errors))
+    _, _, _, _, _, _, _, _ -> Error(ConfigError(errors))
   }
 }
 
@@ -242,6 +258,72 @@ fn decode_delivery(
     ),
     concurrency,
   ))
+}
+
+/// `[retention]` セクション。各キーは日数で、未設定 / 0 は無期限保持。
+/// 負数は誤設定のため拒否する(自動 prune の cutoff 計算を壊すため)。
+fn decode_retention(
+  doc: Dict(String, Toml),
+) -> Result(Retention, List(String)) {
+  use succeeded_days <- result.try(
+    retention_days(doc, ["retention", "succeeded_days"]),
+  )
+  use dead_letter_days <- result.try(
+    retention_days(doc, ["retention", "dead_letter_days"]),
+  )
+  use events_days <- result.try(
+    retention_days(doc, ["retention", "events_days"]),
+  )
+  Ok(Retention(succeeded_days:, dead_letter_days:, events_days:))
+}
+
+fn retention_days(
+  doc: Dict(String, Toml),
+  key: List(String),
+) -> Result(Int, List(String)) {
+  let label = key_label(key)
+  case tom.get_int(doc, key) {
+    Ok(value) if value >= 0 -> Ok(value)
+    Ok(_) -> Error([label <> " must be >= 0"])
+    Error(tom.NotFound(_)) -> Ok(0)
+    Error(tom.WrongType(_, expected, got)) ->
+      Error([label <> " must be " <> expected <> ", got " <> got])
+  }
+}
+
+/// `vectum prune` 用に `[storage] path` と `[retention]` だけ読む。
+/// sources / destinations の secret 検証エラーで操作不能にならないようにする
+/// (load_storage_path と同様)。
+pub fn load_retention(
+  path: String,
+) -> Result(#(String, Retention), ConfigError) {
+  case simplifile.read(path) {
+    Error(error) ->
+      Error(
+        ConfigError([
+          "failed to read config " <> path <> ": " <> string.inspect(error),
+        ]),
+      )
+    Ok(text) -> parse_retention(text)
+  }
+}
+
+pub fn parse_retention(
+  text: String,
+) -> Result(#(String, Retention), ConfigError) {
+  case tom.parse(text) {
+    Error(error) ->
+      Error(ConfigError(["invalid TOML: " <> string.inspect(error)]))
+    Ok(doc) ->
+      case decode_storage(doc), decode_retention(doc) {
+        Ok(storage_config), Ok(retention) ->
+          Ok(#(storage_config.path, retention))
+        Error(storage_messages), Error(retention_messages) ->
+          Error(ConfigError(list.append(storage_messages, retention_messages)))
+        Error(messages), Ok(_) -> Error(ConfigError(messages))
+        Ok(_), Error(messages) -> Error(ConfigError(messages))
+      }
+  }
 }
 
 fn decode_sources(
@@ -1005,6 +1087,8 @@ const server_keys = ["host", "port", "max_body_bytes"]
 
 const storage_keys = ["path"]
 
+const retention_keys = ["succeeded_days", "dead_letter_days", "events_days"]
+
 const delivery_keys = [
   "max_attempts",
   "initial_backoff_ms",
@@ -1055,6 +1139,7 @@ fn collect_warnings(doc: Dict(String, Toml)) -> List(String) {
   list.flatten([
     warn_table_keys(doc, "server", server_keys),
     warn_table_keys(doc, "storage", storage_keys),
+    warn_table_keys(doc, "retention", retention_keys),
     warn_table_keys(doc, "delivery", delivery_keys),
     warn_row_keys(doc, "sources", source_keys, "source"),
     warn_row_keys(doc, "destinations", destination_keys, "destination"),

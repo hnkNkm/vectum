@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 自動 retention と手動 prune を追加。`[retention]` の `succeeded_days` / `dead_letter_days` / `events_days`(整数・日、0 は無期限保持)を過ぎた terminal な Delivery と孤児 Event を削除する。dispatcher が 1 時間に最大 1 回自動実行し(ログ `retention_pruned`、メトリクス `retention_deleted_deliveries_total` / `retention_deleted_events_total`)、`vectum prune [--dry-run]` で手動実行できる。`pending` / `delivering` / `retry_scheduled` は削除しない(#30)
 - ルーティングフィルタに OR / grouped condition(`[routes.condition]`)を追加。group ノード(`op` = `all` / `any`)と leaf(従来の filter 形)をネストして `A OR B` や `(A AND B) OR C` を表現できる。`[[routes.filters]]` との併設はエラー、group のネストは最大 4 段、評価は設定順で短絡する(#36)
 - CI に build・example 設定の `validate`・E2E smoke(`scripts/e2e_smoke.sh`)ジョブを追加。Ingress の HTTP テストは固定ポートではなく OS 割り当ての一時ポートで実行するようにした
 - Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`)を追加。SELECT のみで状態を変えず、`--limit` 既定 50・上限 1000。存在しない ID は非 0 終了(#31)
