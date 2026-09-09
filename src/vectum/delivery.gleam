@@ -1,14 +1,28 @@
-import gleam/http
 import gleam/http/request
-import gleam/httpc
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import vectum/config.{type Destination, HttpDestination}
 import vectum/event.{type Event}
 import vectum/hmac
 import vectum/retry.{type Policy}
+
+/// gleam_httpc は per-request HTTP options に {autoretry, 0} を渡せないため、
+/// 配送 POST は直接 httpc を呼ぶ Erlang FFI を使う。OTP の httpc 既定は
+/// autoretry = infinity で、503 + Retry-After をタイムアウト内に透過再送する
+/// (F1)。vectum のリトライ勘定・backoff から隠れる再送を防ぐため無効化し、
+/// 503 を Status(503) として表面化させる。https は FFI 側でサーバ証明書を
+/// システム CA ストアに対して検証する。
+@external(erlang, "vectum_httpc_ffi", "post")
+fn post(
+  url: String,
+  headers: List(#(String, String)),
+  content_type: String,
+  body: String,
+  timeout_ms: Int,
+) -> Result(Int, String)
 
 pub type Outgoing {
   Outgoing(
@@ -84,33 +98,26 @@ pub fn decide(
 pub fn send_http(outgoing: Outgoing) -> SendResult {
   case request.to(outgoing.url) {
     Error(_) -> ConnectFailed("invalid destination url")
-    Ok(req) -> {
-      let req =
-        req
-        |> request.set_method(http.Post)
-        |> request.set_body(outgoing.body)
-        |> set_headers(outgoing.headers)
-      let config =
-        httpc.configure()
-        |> httpc.timeout(outgoing.timeout_ms)
-      case httpc.dispatch(config, req) {
-        Ok(response) -> Status(response.status)
-        Error(httpc.ResponseTimeout) -> TimedOut
-        Error(httpc.FailedToConnect(..) as failed) ->
-          ConnectFailed(string.inspect(failed))
-        Error(other) -> ConnectFailed(string.inspect(other))
+    Ok(_) -> {
+      let content_type =
+        outgoing.headers
+        |> list.key_find("content-type")
+        |> result.unwrap("application/json")
+      case
+        post(
+          outgoing.url,
+          outgoing.headers,
+          content_type,
+          outgoing.body,
+          outgoing.timeout_ms,
+        )
+      {
+        Ok(status) -> Status(status)
+        Error("timeout") -> TimedOut
+        Error(reason) -> ConnectFailed(reason)
       }
     }
   }
-}
-
-fn set_headers(
-  req: request.Request(String),
-  headers: List(#(String, String)),
-) -> request.Request(String) {
-  list.fold(headers, req, fn(acc, header) {
-    request.set_header(acc, header.0, header.1)
-  })
 }
 
 fn to_attempt(result: SendResult) -> retry.AttemptResult {

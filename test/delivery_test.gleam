@@ -1,4 +1,6 @@
 import gleam/dict
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -107,4 +109,85 @@ pub fn connect_failed_preserves_detail_test() {
     }
     _ -> panic as "expected ConnectFailed for closed port"
   }
+}
+
+@external(erlang, "retry_after_ffi", "start")
+fn retry_after_server_start() -> Int
+
+@external(erlang, "retry_after_ffi", "request_count")
+fn retry_after_server_count(port: Int) -> Int
+
+@external(erlang, "retry_after_ffi", "stop")
+fn retry_after_server_stop(port: Int) -> Nil
+
+/// F1: httpc の透過リトライ (autoretry) を無効化している。
+/// 503 + `Retry-After: 1` に 1 回だけ POST が届き、503 がそのまま
+/// Status(503) として返り、vectum の backoff に乗る。
+pub fn no_hidden_autoretry_on_503_retry_after_test() {
+  let port = retry_after_server_start()
+  let outgoing =
+    delivery.Outgoing(
+      url: "http://127.0.0.1:" <> int.to_string(port) <> "/events",
+      headers: [#("content-type", "application/json")],
+      body: "{}",
+      timeout_ms: 5000,
+    )
+  let result = delivery.send_http(outgoing)
+  // Retry-After: 1 の再送窓 (1 秒) を空けてから数える。透過リトライが
+  // 生きていたらここで 2 回目の POST が届いている。
+  process.sleep(1500)
+  let count = retry_after_server_count(port)
+  retry_after_server_stop(port)
+  let assert delivery.Status(503) = result
+  let assert 1 = count
+  let assert delivery.RetryScheduled(1, 1000, "http 503") =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+@external(erlang, "tls_ffi", "start")
+fn tls_server_start() -> Int
+
+@external(erlang, "tls_ffi", "request_count")
+fn tls_server_count(port: Int) -> Int
+
+@external(erlang, "tls_ffi", "stop")
+fn tls_server_stop(port: Int) -> Nil
+
+@external(erlang, "tls_ffi", "control_get")
+fn tls_control_get(port: Int) -> Int
+
+/// F2: https 配送は自己署名証明書のサーバを拒否する (verify_peer +
+/// システム CA ストア)。TLS ハンドシェイクが届かないためサーバ側の
+/// HTTP リクエスト数は 0 のまま。
+pub fn https_rejects_self_signed_cert_test() {
+  let port = tls_server_start()
+  let outgoing =
+    delivery.Outgoing(
+      url: "https://127.0.0.1:" <> int.to_string(port) <> "/events",
+      headers: [#("content-type", "application/json")],
+      body: "{}",
+      timeout_ms: 3000,
+    )
+  let result = delivery.send_http(outgoing)
+  let count = tls_server_count(port)
+  tls_server_stop(port)
+  case result {
+    delivery.ConnectFailed(reason) -> {
+      assert string.contains(reason, "FailedToConnect")
+      let assert delivery.RetryScheduled(1, 1000, _) =
+        delivery.decide(policy(), 0, result, 0, 0.0)
+    }
+    _ -> panic as "expected ConnectFailed for self-signed https server"
+  }
+  let assert 0 = count
+}
+
+/// F2 control: 検証を無効化した (verify_none) リクエストは同じ自己署名
+/// サーバに届く。テストサーバ自体は健全で、拒否が証明書検証によるもの
+/// だと確認する。
+pub fn https_self_signed_server_reachable_without_verification_test() {
+  let port = tls_server_start()
+  let assert 200 = tls_control_get(port)
+  let assert 1 = tls_server_count(port)
+  tls_server_stop(port)
 }

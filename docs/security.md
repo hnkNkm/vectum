@@ -19,7 +19,17 @@ X-Hub-Signature-256: sha256=<hex>
 
 ## TLS
 
-Destination への HTTPS は gleam_httpc の TLS で送る。Ingress の TLS 終端は reverse proxy に委譲する。プロセス自体は HTTP で待つ。
+Destination への HTTPS は inets httpc 経由の FFI (`vectum_httpc_ffi`) で送る。
+https URL には明示的に `{ssl, [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}, {depth, 3}, {customize_hostname_check, [...]}]}` を渡すため、
+Destination のサーバ証明書は**システム CA ストアに対して検証され、ホスト名も検証される**。
+自己署名や未知の CA の証明書は接続失敗 (ConnectFailed) になり、retry 対象になる。
+(OTP 28 の httpc は ssl オプション無しでも検証が既定だが、バージョンに依存しないよう明示している。)
+
+配送 POST は httpc の透過リトライ (`autoretry`) を無効化している。OTP の httpc 既定
+(autoretry = infinity) では 503 + `Retry-After` をタイムアウト内に 1 回透過再送し、
+vectum のリトライ勘定・backoff から隠れるため。503 はそのまま返り、vectum の backoff に乗る。
+
+Ingress の TLS 終端は reverse proxy に委譲する。プロセス自体は HTTP で待つ。
 
 ## Payload 上限
 
