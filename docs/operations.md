@@ -34,6 +34,30 @@ docker run --rm -p 8080:8080 \
 
 Ingress の TLS は reverse proxy に委譲する。
 
+## 状態確認（read-only）
+
+起動中の状態を変えずに SQLite の状態を確認できる CLI が `vectum status` /
+`events list|show` / `deliveries list|show`(いずれも読み取り専用、#31)。
+HMAC secret は不要で、`[storage] path` さえ読めれば動く。詳細は
+[docs/cli.md](./cli.md)。
+
+```bash
+# 滞留の有無と status 別件数
+vectum status --config router.toml
+
+# 最近受理された Event と、特定 Event の配送状況
+vectum events list --limit 10 --config router.toml
+vectum events show <event-id> --config router.toml
+
+# retry 中 / dead-letter の Delivery を Destination 指定で確認
+vectum deliveries list --status retry_scheduled --config router.toml
+vectum deliveries list --status dead_letter --destination audit --config router.toml
+vectum deliveries show <delivery-id> --config router.toml
+```
+
+サーバー稼働中でも WAL モードのため読み取りは可能。参照コマンドは
+SELECT のみで、retry や削除などの操作は `dead retry` / `dead delete` を使う。
+
 ## Graceful Shutdown
 
 SIGTERM / SIGINT を受けると次の順で停止する。
