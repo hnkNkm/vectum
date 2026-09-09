@@ -35,6 +35,7 @@ fn dest(name: String, timeout_ms: option.Option(Int)) -> config.Destination {
     timeout_ms:,
     hmac_secret: None,
     hmac_header: "X-Vectum-Signature",
+    bearer_token: None,
   )
 }
 
