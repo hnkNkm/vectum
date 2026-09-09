@@ -46,13 +46,68 @@ pub fn outgoing_includes_idempotency_headers_test() {
 pub fn decide_success_retry_and_dead_test() {
   let p = policy()
   let assert delivery.Succeeded(1) =
-    delivery.decide(p, 0, delivery.Status(204), 0, 0.0)
+    delivery.decide(p, 0, delivery.Status(204, None), 0, 0.0)
   let assert delivery.RetryScheduled(1, 1000, "http 500") =
-    delivery.decide(p, 0, delivery.Status(500), 0, 0.0)
+    delivery.decide(p, 0, delivery.Status(500, None), 0, 0.0)
   let assert delivery.DeadLettered(1, "http 400") =
-    delivery.decide(p, 0, delivery.Status(400), 0, 0.0)
+    delivery.decide(p, 0, delivery.Status(400, None), 0, 0.0)
   let assert delivery.DeadLettered(8, "timeout") =
     delivery.decide(p, 7, delivery.TimedOut, 0, 0.0)
+}
+
+/// #37: 429 + `Retry-After: 2` (delta-seconds) が届いたら、exponential
+/// backoff でなくサーバ指定どおり now + 2000ms に次回試行を予約する。
+/// jitter は適用しない。試行回数が進んでもサーバ指定が優先する。
+pub fn decide_retry_after_delta_seconds_test() {
+  let p = policy()
+  let assert delivery.RetryScheduled(1, 2000, "http 429") =
+    delivery.decide(p, 0, delivery.Status(429, Some(2000)), 0, 0.0)
+  let assert delivery.RetryScheduled(3, 8000, "http 429") =
+    delivery.decide(p, 2, delivery.Status(429, Some(2000)), 6000, 0.5)
+}
+
+/// #37: ヘッダなし・不正・形式不明 (FFI が None に正規化) は従来の
+/// exponential backoff のまま。
+pub fn decide_retry_after_absent_falls_back_to_backoff_test() {
+  let p = policy()
+  let assert delivery.RetryScheduled(1, 1000, "http 429") =
+    delivery.decide(p, 0, delivery.Status(429, None), 0, 0.0)
+  let assert delivery.RetryScheduled(2, 2000, "http 503") =
+    delivery.decide(p, 1, delivery.Status(503, None), 0, 0.0)
+}
+
+/// #37: HTTP-date が過去 (FFI が Some(0) に正規化) なら即時 (now + 0)。
+pub fn decide_retry_after_past_date_is_immediate_test() {
+  let assert delivery.RetryScheduled(1, 0, "http 429") =
+    delivery.decide(policy(), 0, delivery.Status(429, Some(0)), 0, 0.0)
+}
+
+/// #37: 過大な Retry-After は retry_after_max_ms (24h) にクランプされる。
+/// クランプの事実は last_error になる error 文字列に残る。
+pub fn decide_retry_after_clamped_to_24h_test() {
+  let assert delivery.RetryScheduled(1, next, error) =
+    delivery.decide(
+      policy(),
+      0,
+      delivery.Status(429, Some(999_999_999_999_000)),
+      0,
+      0.0,
+    )
+  assert next == retry.retry_after_max_ms
+  assert error == "http 429 retry-after 999999999999000ms clamped to 86400000ms"
+}
+
+/// #37: 上限ちょうどの値はクランプされない (説明文も通常のまま)。
+pub fn decide_retry_after_exactly_at_cap_is_not_clamped_test() {
+  let assert delivery.RetryScheduled(1, next, "http 429") =
+    delivery.decide(
+      policy(),
+      0,
+      delivery.Status(429, Some(retry.retry_after_max_ms)),
+      0,
+      0.0,
+    )
+  assert next == retry.retry_after_max_ms
 }
 
 pub fn decide_internal_error_uses_backoff_then_dead_test() {
@@ -114,6 +169,9 @@ pub fn connect_failed_preserves_detail_test() {
 @external(erlang, "retry_after_ffi", "start")
 fn retry_after_server_start() -> Int
 
+@external(erlang, "retry_after_ffi", "start")
+fn retry_after_server_start_scenario(scenario: String) -> Int
+
 @external(erlang, "retry_after_ffi", "request_count")
 fn retry_after_server_count(port: Int) -> Int
 
@@ -122,7 +180,9 @@ fn retry_after_server_stop(port: Int) -> Nil
 
 /// F1: httpc の透過リトライ (autoretry) を無効化している。
 /// 503 + `Retry-After: 1` に 1 回だけ POST が届き、503 がそのまま
-/// Status(503) として返り、vectum の backoff に乗る。
+/// Status(503, Some(1000)) として返る。以降の再送タイミングは vectum の
+/// ポリシー層 (decide) が決める (#37): このポリシーでは 1 回目の backoff
+/// も 1000ms のため、予約時刻は同じ値になる。
 pub fn no_hidden_autoretry_on_503_retry_after_test() {
   let port = retry_after_server_start()
   let outgoing =
@@ -138,9 +198,82 @@ pub fn no_hidden_autoretry_on_503_retry_after_test() {
   process.sleep(1500)
   let count = retry_after_server_count(port)
   retry_after_server_stop(port)
-  let assert delivery.Status(503) = result
+  let assert delivery.Status(503, Some(1000)) = result
   let assert 1 = count
   let assert delivery.RetryScheduled(1, 1000, "http 503") =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+/// シナリオ応答を返すローカルサーバに 1 回だけ POST し、結果を返す。
+/// サーバは必ず閉じる。POST が 2 回以上届いたら (httpc の透過リトライ
+/// など) assert で失敗する。
+fn scenario_result(scenario: String) -> delivery.SendResult {
+  let port = retry_after_server_start_scenario(scenario)
+  let outgoing =
+    delivery.Outgoing(
+      url: "http://127.0.0.1:" <> int.to_string(port) <> "/events",
+      headers: [#("content-type", "application/json")],
+      body: "{}",
+      timeout_ms: 5000,
+    )
+  let result = delivery.send_http(outgoing)
+  let count = retry_after_server_count(port)
+  retry_after_server_stop(port)
+  let assert 1 = count
+  result
+}
+
+/// #37: 実 HTTP 配送で 429 + `Retry-After: 2` を受けると FFI が
+/// Some(2000) を返し、decide が now + 2000ms に次回試行を予約する。
+pub fn send_http_honors_retry_after_delta_test() {
+  let result = scenario_result("ra2")
+  let assert delivery.Status(429, Some(2000)) = result
+  let assert delivery.RetryScheduled(1, 2000, "http 429") =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+/// #37: malformed な Retry-After (delta-seconds でも HTTP-date でもない)
+/// は None に正規化され、従来の exponential backoff にフォールバックする。
+pub fn send_http_malformed_retry_after_falls_back_test() {
+  let result = scenario_result("malformed")
+  let assert delivery.Status(429, None) = result
+  let assert delivery.RetryScheduled(1, 1000, "http 429") =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+/// #37: HTTP-date 形式の Retry-After が過去の日時 (1 時間前) なら
+/// delay 0ms に正規化され、即時 (now + 0) に次回試行が予約される。
+pub fn send_http_retry_after_past_http_date_is_immediate_test() {
+  let result = scenario_result("past_date")
+  let assert delivery.Status(429, Some(0)) = result
+  let assert delivery.RetryScheduled(1, 0, "http 429") =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+/// #37: 過大な Retry-After (delta-seconds) は 24h 上限にクランプされ、
+/// last_error の説明文にその事実が残る。
+pub fn send_http_retry_after_huge_value_is_clamped_test() {
+  let result = scenario_result("huge")
+  let assert delivery.Status(429, Some(999_999_999_999_000)) = result
+  let assert delivery.RetryScheduled(1, next, error) =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+  assert next == retry.retry_after_max_ms
+  assert error == "http 429 retry-after 999999999999000ms clamped to 86400000ms"
+}
+
+/// #37: 2xx は従来どおり success (Retry-After は読まれない)。
+pub fn send_http_ok_is_success_test() {
+  let result = scenario_result("ok200")
+  let assert delivery.Status(200, None) = result
+  let assert delivery.Succeeded(1) =
+    delivery.decide(policy(), 0, result, 0, 0.0)
+}
+
+/// #37: retry 対象外の 4xx は従来どおり dead letter。
+pub fn send_http_bad_request_is_dead_letter_test() {
+  let result = scenario_result("bad400")
+  let assert delivery.Status(400, None) = result
+  let assert delivery.DeadLettered(1, "http 400") =
     delivery.decide(policy(), 0, result, 0, 0.0)
 }
 

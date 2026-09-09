@@ -48,7 +48,16 @@ concurrency = 8
 | timeout / connection error | retry |
 | その他 4xx / 3xx | fail（dead letter へ） |
 
-Backoff は exponential + equal jitter。上限は `max_backoff_ms`（既定 60s）。`Retry-After` は v0.1 では未対応。
+Backoff は exponential + equal jitter。上限は `max_backoff_ms`(既定 60s)。
+
+### Retry-After(#37)
+
+retry 対象 (408 / 429 / 5xx) の応答に有効な `Retry-After` ヘッダがある場合、次回試行は **backoff / jitter を使わずサーバ指定の時刻** (`next_attempt_at = 現在時刻 + Retry-After`、jitter なし) に予約する。サーバが指定した時刻より早く retry することはない。優先順位は `Retry-After` > exponential backoff で、`max_attempts` の数え方と dead letter への遷移は変わらない。
+
+- `Retry-After: <delta-seconds>` と HTTP-date の両形式に対応。HTTP-date は RFC 9110 の形式 (例: `Sun, 06 Nov 1994 08:49:37 GMT`) を inets でパースし、現在時刻からの待ち ms に換算する。過去の日時は 0 ms(即時)として扱う
+- 上限は `retry_after_max_ms` = 86_400_000 ms (24 時間)。これを超える有効値は 24h にクランプされ、クランプの事実は `last_error` の説明文に残る
+- ヘッダなし・不正・形式不明 (malformed) は従来どおり exponential backoff + equal jitter にフォールバックする
+- httpc の透過リトライ (autoretry) は無効のまま (F1)。Retry-After の再送判断はすべて vectum のポリシー層に一元化されている
 
 並列数は `concurrency`(既定 8)。実行中ワーカー数がこの上限を超えないよう、dispatcher は空き枠分だけ SQLite から due Delivery を claim する(Destination 単位の Supervisor ではなく共有 worker pool)。
 

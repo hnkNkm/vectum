@@ -1,3 +1,4 @@
+import gleam/option.{None, Some}
 import vectum/retry.{type Policy, Policy}
 
 fn policy() -> Policy {
@@ -48,4 +49,43 @@ pub fn jitter_caps_at_base_for_odd_base_test() {
   let p = Policy(..policy(), jitter: True, initial_backoff_ms: 1001)
   assert retry.backoff_ms(p, 1, 0.0) == 500
   assert retry.backoff_ms(p, 1, 1.0) == 1001
+}
+
+/// #37: 有効な Retry-After (Some) は exponential backoff より優先され、
+/// そのままの delay になる (jitter も無効)。
+pub fn next_delay_prefers_retry_after_over_backoff_test() {
+  let p = policy()
+  // 2 回目の backoff (2000ms) より短くてもサーバ指定が勝つ。
+  assert retry.next_delay_ms(p, 2, 0.0, Some(500)) == 500
+  // 何回目でもサーバ指定どおり。
+  assert retry.next_delay_ms(p, 7, 0.0, Some(500)) == 500
+}
+
+/// #37: Retry-After が有効な間は jitter を適用しない (jitter: True でも
+/// jitter_unit に依らず exact な delay)。
+pub fn next_delay_applies_no_jitter_to_retry_after_test() {
+  let p = Policy(..policy(), jitter: True)
+  assert retry.next_delay_ms(p, 1, 0.0, Some(2000)) == 2000
+  assert retry.next_delay_ms(p, 1, 1.0, Some(2000)) == 2000
+}
+
+/// #37: 上限ちょうどはクランプされない。超過分は retry_after_max_ms (24h)
+/// にクランプされる。
+pub fn next_delay_clamps_retry_after_at_24h_test() {
+  let p = policy()
+  assert retry.next_delay_ms(p, 1, 0.0, Some(86_400_000)) == 86_400_000
+  assert retry.next_delay_ms(p, 1, 0.0, Some(86_400_001)) == 86_400_000
+  assert retry.next_delay_ms(p, 1, 0.0, Some(999_999_999_999_999_999))
+    == 86_400_000
+}
+
+/// #37: Retry-After なし (None) は従来どおり exponential backoff
+/// (+ equal jitter)。
+pub fn next_delay_falls_back_to_backoff_without_header_test() {
+  let p = policy()
+  assert retry.next_delay_ms(p, 1, 0.0, None) == 1000
+  assert retry.next_delay_ms(p, 2, 0.0, None) == 2000
+  let p = Policy(..policy(), jitter: True)
+  assert retry.next_delay_ms(p, 1, 0.0, None) == 500
+  assert retry.next_delay_ms(p, 1, 1.0, None) == 1000
 }

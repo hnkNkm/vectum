@@ -97,7 +97,7 @@ max_backoff_ms = 1000
 
 fn slow_send(_outgoing: delivery.Outgoing) -> delivery.SendResult {
   process.sleep(150)
-  delivery.Status(200)
+  delivery.Status(200, None)
 }
 
 pub fn tick_claims_only_free_capacity_test() {
@@ -179,7 +179,9 @@ pub fn panicked_worker_releases_slot_test() {
 
   // 枠が戻っているため、残り 1 件を通常どおり処理できる
   let assert Ok(1) =
-    dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(200) })
+    dispatcher.tick(parsed, store, m, fn(_outgoing) {
+      delivery.Status(200, None)
+    })
   wait_until(
     fn() {
       case metrics.snapshot(m) {
@@ -238,7 +240,9 @@ pub fn dispatcher_death_does_not_leak_slots_test() {
       "rs-3",
     ])
   let assert Ok(1) =
-    dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(200) })
+    dispatcher.tick(parsed, store, m, fn(_outgoing) {
+      delivery.Status(200, None)
+    })
   // 予約はワーカー自身が行うため、解放待ちの前に枠の確保(+1)を待つ
   wait_until(fn() { shutdown.active_workers() == baseline + 1 }, 3000)
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
@@ -257,7 +261,9 @@ pub fn failed_send_releases_slot_test() {
     ])
 
   let assert Ok(1) =
-    dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(500) })
+    dispatcher.tick(parsed, store, m, fn(_outgoing) {
+      delivery.Status(500, None)
+    })
 
   // retry 計上(mark_retry 完了)を確認し、その後に枠解放を待つ。
   // 解放されなければ baseline に戻らず最終 assert が失敗する
@@ -311,7 +317,9 @@ pub fn storage_outage_tick_fails_safe_and_resumes_test() {
       "out-2",
     ])
   let assert Ok(1) =
-    dispatcher.tick(parsed, recovered, m, fn(_outgoing) { delivery.Status(200) })
+    dispatcher.tick(parsed, recovered, m, fn(_outgoing) {
+      delivery.Status(200, None)
+    })
   // 予約はワーカー自身が行うため、解放待ちの前に枠の確保(+1)を待つ
   wait_until(fn() { shutdown.active_workers() == baseline + 1 }, 3000)
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)

@@ -1,5 +1,6 @@
 import gleam/float
 import gleam/int
+import gleam/option.{type Option, None, Some}
 
 pub type Policy {
   Policy(
@@ -10,6 +11,10 @@ pub type Policy {
     jitter: Bool,
   )
 }
+
+/// Retry-After の上限 (24 時間)。これより大きい有効値はこの値にクランプ
+/// される。クランプの事実は last_error の説明文に残る (#37)。
+pub const retry_after_max_ms: Int = 86_400_000
 
 pub type Outcome {
   Success
@@ -44,6 +49,30 @@ pub fn backoff_ms(policy: Policy, attempts: Int, jitter_unit: Float) -> Int {
   case policy.jitter {
     False -> base
     True -> apply_jitter(base, jitter_unit)
+  }
+}
+
+/// Retry 対象の応答で次回試行まで待つ delay (ms) を決める (#37)。
+///
+/// 有効な `Retry-After` (`Some(delay_ms)`、FFI が delta-seconds / HTTP-date
+/// を解釈して生成) がある場合は、サーバ指定を尊重して **そのまま** 使う:
+/// - backoff / jitter は適用しない (jitter は無効)
+/// - サーバ指定より早く retry することはない
+/// - `retry_after_max_ms` (24h) でクランプする (クランプの事実は
+///   last_error の説明文に載る)
+///
+/// ヘッダなし・不正・形式不明 (`None`) は従来どおり exponential backoff
+/// (+ equal jitter) にフォールバックする。`max_attempts` の扱いは不変
+/// (試行回数として数え、尽きたら dead letter)。
+pub fn next_delay_ms(
+  policy: Policy,
+  attempts: Int,
+  jitter_unit: Float,
+  retry_after_ms: Option(Int),
+) -> Int {
+  case retry_after_ms {
+    Some(ms) -> int.min(ms, retry_after_max_ms)
+    None -> backoff_ms(policy, attempts, jitter_unit)
   }
 }
 

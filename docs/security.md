@@ -27,7 +27,9 @@ Destination のサーバ証明書は**システム CA ストアに対して検�
 
 配送 POST は httpc の透過リトライ (`autoretry`) を無効化している。OTP の httpc 既定
 (autoretry = infinity) では 503 + `Retry-After` をタイムアウト内に 1 回透過再送し、
-vectum のリトライ勘定・backoff から隠れるため。503 はそのまま返り、vectum の backoff に乗る。
+vectum のリトライ勘定・backoff から隠れるため。503 はそのまま返り、次の試行タイミングは
+vectum のポリシー層が決める: 有効な `Retry-After` があればその指定時刻 (上限 24h)、
+無ければ exponential backoff(#37)。
 
 Ingress の TLS 終端は reverse proxy に委譲する。プロセス自体は HTTP で待つ。
 

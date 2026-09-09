@@ -9,7 +9,7 @@ import simplifile
 import tom.{type Toml}
 import vectum/env
 import vectum/event.{type EventValue}
-import vectum/filter.{type Filter, Filter}
+import vectum/filter.{type Condition, type ConditionNode, type Filter, Filter}
 import vectum/retry.{type Policy, Policy}
 import vectum/route.{type Route, Route}
 
@@ -327,8 +327,19 @@ fn decode_route(table: Dict(String, Toml)) -> Result(Route, List(String)) {
   use source <- result.try(req_string(table, ["source"]))
   use event <- result.try(req_string(table, ["event"]))
   use destinations <- result.try(req_string_list(table, ["destinations"]))
+  // filters(AND) と condition(grouped) は意図が曖昧なため併設を拒否する。
+  use _exclusive <- result.try(
+    case tom.get(table, ["filters"]), tom.get(table, ["condition"]) {
+      Ok(_), Ok(_) ->
+        Error([
+          "route " <> name <> " sets both filters and condition; use only one",
+        ])
+      _, _ -> Ok(Nil)
+    },
+  )
   use filters <- result.try(decode_filters(table, name))
-  Ok(Route(name:, source:, event:, destinations:, filters:))
+  use condition <- result.try(decode_condition(table, name))
+  Ok(Route(name:, source:, event:, destinations:, filters:, condition:))
 }
 
 fn decode_filters(
@@ -366,13 +377,21 @@ fn decode_filter(
   table: Dict(String, Toml),
   route_name: String,
 ) -> Result(Filter, List(String)) {
+  decode_filter_at(table, "route " <> route_name)
+}
+
+/// `subject` はエラー文言に載せる位置情報(`route <name>` または
+/// condition 内の階層位置)。エラー文言の互換性のため legacy 呼び出しは
+/// decode_filter 経由で `route <name>` を渡す。
+fn decode_filter_at(
+  table: Dict(String, Toml),
+  subject: String,
+) -> Result(Filter, List(String)) {
   use path <- result.try(req_string(table, ["path"]))
   use op_name <- result.try(req_string(table, ["op"]))
   use op <- result.try(
     filter.parse_op(op_name)
-    |> result.map_error(fn(message) {
-      ["route " <> route_name <> ": " <> message]
-    }),
+    |> result.map_error(fn(message) { [subject <> ": " <> message] }),
   )
   use value <- result.try(case op {
     filter.Exists | filter.NotExists ->
@@ -385,15 +404,139 @@ fn decode_filter(
     _ ->
       case tom.get(table, ["value"]) {
         Error(tom.NotFound(_)) ->
-          Error([
-            "route " <> route_name <> " filter " <> path <> " requires value",
-          ])
+          Error([subject <> " filter " <> path <> " requires value"])
         Ok(toml) -> toml_value(toml)
         Error(tom.WrongType(_, expected, got)) ->
           Error(["filter value must be " <> expected <> ", got " <> got])
       }
   })
   Ok(Filter(path:, op:, value:))
+}
+
+/// group のネストは root を 1 段として最大 4 段(#36)。leaf は最深 group の下に
+/// 置ける(leaf 自体は depth 制限に数えない)。
+const max_condition_depth = 4
+
+/// `[routes.condition]` をデコードする。ルートは group ノード(op/filters)。
+fn decode_condition(
+  table: Dict(String, Toml),
+  route_name: String,
+) -> Result(Option(Condition), List(String)) {
+  let location = "route " <> route_name <> " condition"
+  case tom.get(table, ["condition"]) {
+    Error(tom.NotFound(_)) -> Ok(None)
+    Ok(tom.Table(inner)) | Ok(tom.InlineTable(inner)) ->
+      decode_condition_group(inner, location, 1)
+      |> result.map(Some)
+    Ok(_) -> Error([location <> " must be a table"])
+    Error(tom.WrongType(_, expected, got)) ->
+      Error([location <> " must be " <> expected <> ", got " <> got])
+  }
+}
+
+/// 1 つの group ノード(`op` + `filters`)をデコードする。
+/// `depth` はこの group 自身の深さ(root = 1)。
+fn decode_condition_group(
+  table: Dict(String, Toml),
+  location: String,
+  depth: Int,
+) -> Result(Condition, List(String)) {
+  case depth > max_condition_depth {
+    True ->
+      Error([
+        location
+        <> " exceeds the maximum condition nesting depth of "
+        <> int.to_string(max_condition_depth),
+      ])
+    False -> {
+      use op_name <- result.try(
+        req_string(table, ["op"])
+        |> result.map_error(fn(messages) {
+          list.map(messages, fn(message) { location <> ": " <> message })
+        }),
+      )
+      use op <- result.try(
+        filter.parse_group_op(op_name)
+        |> result.map_error(fn(message) { [location <> ": " <> message] }),
+      )
+      use children <- result.try(decode_condition_children(
+        table,
+        location,
+        depth,
+      ))
+      case children {
+        [] -> Error([location <> ": group must not be empty"])
+        _ -> Ok(filter.Condition(op:, children:))
+      }
+    }
+  }
+}
+
+/// group ノードの `filters` 配列をデコードする。各要素は leaf(filters キーなし)
+/// か group(filters キーあり)。
+fn decode_condition_children(
+  table: Dict(String, Toml),
+  location: String,
+  depth: Int,
+) -> Result(List(ConditionNode), List(String)) {
+  case tom.get(table, ["filters"]) {
+    Error(tom.NotFound(_)) -> Error([location <> " is missing filters"])
+    Ok(tom.Array(items)) -> decode_condition_items(items, location, depth)
+    Ok(tom.ArrayOfTables(tables)) ->
+      decode_condition_items(
+        list.map(tables, fn(inner) { tom.Table(inner) }),
+        location,
+        depth,
+      )
+    Ok(_) -> Error([location <> " filters must be an array of tables"])
+    Error(tom.WrongType(_, expected, got)) ->
+      Error([
+        location <> " filters must be " <> expected <> ", got " <> got,
+      ])
+  }
+}
+
+fn decode_condition_items(
+  items: List(Toml),
+  location: String,
+  depth: Int,
+) -> Result(List(ConditionNode), List(String)) {
+  let located =
+    list.index_map(items, with: fn(item, index) {
+      #(item, location <> " filters[" <> int.to_string(index + 1) <> "]")
+    })
+  map_collect(located, fn(pair) {
+    decode_condition_node(pair.0, pair.1, depth + 1)
+  })
+}
+
+/// condition の子 1 つを leaf / group のどちらかにデコードする。
+fn decode_condition_node(
+  item: Toml,
+  location: String,
+  depth: Int,
+) -> Result(ConditionNode, List(String)) {
+  case item {
+    tom.Table(inner) | tom.InlineTable(inner) ->
+      case dict.has_key(inner, "filters"), dict.has_key(inner, "path") {
+        True, True ->
+          Error([
+            location <> " mixes filter (path) and group (filters) keys",
+          ])
+        True, False ->
+          decode_condition_group(inner, location, depth)
+          |> result.map(filter.Group)
+        False, True ->
+          decode_filter_at(inner, location)
+          |> result.map(filter.Leaf)
+        False, False ->
+          Error([
+            location
+            <> " must be a filter (path/op/value) or a group (op/filters)",
+          ])
+      }
+    _ -> Error([location <> " must be a table"])
+  }
 }
 
 fn toml_value(toml: Toml) -> Result(EventValue, List(String)) {
@@ -892,9 +1035,19 @@ const destination_keys = [
   "hmac_secret_env",
 ]
 
-const route_keys = ["name", "source", "event", "destinations", "filters"]
+const route_keys = [
+  "name",
+  "source",
+  "event",
+  "destinations",
+  "filters",
+  "condition",
+]
 
 const filter_keys = ["path", "op", "value"]
+
+/// condition の group ノードのキー。leaf ノードは filter_keys と同じ形。
+const condition_group_keys = ["op", "filters"]
 
 /// 失敗させない未知キー検出。構造が想定と異なれば decode 側が別途エラーにするため、
 /// ここでは未知キーの報告のみ行い、常に非破壊で返す。
@@ -940,7 +1093,8 @@ fn warn_row_keys(
   |> list.flatten
 }
 
-/// routes は row 本体に加え、各 row の `filters` テーブル群の未知キーも報告する。
+/// routes は row 本体に加え、各 row の `filters` / `condition` テーブル群の
+/// 未知キーも報告する。
 fn warn_route_tables(doc: Dict(String, Toml)) -> List(String) {
   collect_row_tables(doc, "routes")
   |> list.index_map(with: fn(row, index) {
@@ -969,9 +1123,50 @@ fn warn_route_tables(doc: Dict(String, Toml)) -> List(String) {
         )
       })
       |> list.flatten
-    list.append(own, filter_msgs)
+    let condition_msgs = case dict.get(row, "condition") {
+      Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) ->
+        warn_condition_table(table, subject <> " condition")
+      _ -> []
+    }
+    list.append(own, list.append(filter_msgs, condition_msgs))
   })
   |> list.flatten
+}
+
+/// condition ツリーの未知キー。group ノード(filters キーあり)は op/filters、
+/// leaf ノードは path/op/value を許可し、group は子へ再帰する。
+/// decode は group と leaf の混在を先にエラーにするため、ここは有効な形だけを扱う。
+fn warn_condition_table(
+  table: Dict(String, Toml),
+  subject: String,
+) -> List(String) {
+  let allowed = case dict.has_key(table, "filters") {
+    True -> condition_group_keys
+    False -> filter_keys
+  }
+  let own = unknown_key_messages(dict.keys(table), allowed, subject)
+  let nested = case dict.has_key(table, "filters") {
+    True ->
+      case dict.get(table, "filters") {
+        Ok(tom.Array(items)) -> items
+        Ok(tom.ArrayOfTables(tables)) ->
+          list.map(tables, fn(inner) { tom.Table(inner) })
+        _ -> []
+      }
+      |> list.index_map(with: fn(item, index) {
+        case item {
+          tom.Table(inner) | tom.InlineTable(inner) ->
+            warn_condition_table(
+              inner,
+              subject <> " filters[" <> int.to_string(index + 1) <> "]",
+            )
+          _ -> []
+        }
+      })
+      |> list.flatten
+    False -> []
+  }
+  list.append(own, nested)
 }
 
 /// `[[section]]` 相当のテーブル一覧を、構造が違えば空で返す (非破壊)。

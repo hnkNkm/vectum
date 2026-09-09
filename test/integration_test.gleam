@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import vectum/accept
 import vectum/clock
 import vectum/config
@@ -68,7 +68,7 @@ pub fn accept_then_successful_delivery_test() {
     cfg(),
     store,
     metrics,
-    fn(_outgoing) { delivery.Status(200) },
+    fn(_outgoing) { delivery.Status(200, None) },
     claimed,
   )
   process.sleep(20)
@@ -104,7 +104,7 @@ pub fn failed_4xx_goes_to_dead_letter_test() {
     cfg(),
     store,
     metrics,
-    fn(_outgoing) { delivery.Status(400) },
+    fn(_outgoing) { delivery.Status(400, None) },
     queued,
   )
   process.sleep(20)
@@ -203,7 +203,7 @@ pub fn reaped_delivery_redelivers_and_counts_test() {
     cfg(),
     store,
     metrics,
-    fn(_outgoing) { delivery.Status(200) },
+    fn(_outgoing) { delivery.Status(200, None) },
     again,
   )
   process.sleep(20)

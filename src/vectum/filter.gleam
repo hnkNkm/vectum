@@ -20,6 +20,23 @@ pub type Filter {
   Filter(path: String, op: Op, value: EventValue)
 }
 
+/// Grouped condition の結合演算子(#36)。
+pub type GroupOp {
+  All
+  Any
+}
+
+/// `[routes.condition]` のルート condition。`op` で子を AND / OR 結合する。
+pub type Condition {
+  Condition(op: GroupOp, children: List(ConditionNode))
+}
+
+/// Condition の子。leaf は従来の Filter、group は再帰的な Condition。
+pub type ConditionNode {
+  Group(child: Condition)
+  Leaf(filter: Filter)
+}
+
 pub fn parse_op(name: String) -> Result(Op, String) {
   case string.lowercase(name) {
     "eq" -> Ok(Eq)
@@ -32,6 +49,21 @@ pub fn parse_op(name: String) -> Result(Op, String) {
     "exists" -> Ok(Exists)
     "not_exists" -> Ok(NotExists)
     other -> Error("invalid filter operator: " <> other)
+  }
+}
+
+pub fn parse_group_op(name: String) -> Result(GroupOp, String) {
+  case string.lowercase(name) {
+    "all" -> Ok(All)
+    "any" -> Ok(Any)
+    other -> Error("invalid condition operator: " <> other)
+  }
+}
+
+pub fn group_op_to_string(op: GroupOp) -> String {
+  case op {
+    All -> "all"
+    Any -> "any"
   }
 }
 
@@ -87,6 +119,58 @@ pub fn matches_value(filter: Filter, found: Result(EventValue, Nil)) -> Bool {
 /// v0.1: filters on the same rule are AND.
 pub fn matches_all(filters: List(Filter), data: EventValue) -> Bool {
   list.all(filters, fn(filter) { matches(filter, data) })
+}
+
+/// Grouped condition の評価(#36)。
+/// `resolve` は leaf の path を解決済みの値へ変換する(Data / Metadata の
+/// 解決方法は呼び出し側で分岐する)。子は設定順(ドキュメント順)に評価し、
+/// `all` は最初の偽、`any` は最初の真で短絡する。
+pub fn matches_condition(
+  condition: Condition,
+  resolve: fn(Filter) -> Result(EventValue, Nil),
+) -> Bool {
+  case condition.op {
+    All -> matches_all_children(condition.children, resolve)
+    Any -> matches_any_children(condition.children, resolve)
+  }
+}
+
+fn matches_all_children(
+  children: List(ConditionNode),
+  resolve: fn(Filter) -> Result(EventValue, Nil),
+) -> Bool {
+  case children {
+    [] -> True
+    [child, ..rest] ->
+      case matches_node(child, resolve) {
+        True -> matches_all_children(rest, resolve)
+        False -> False
+      }
+  }
+}
+
+fn matches_any_children(
+  children: List(ConditionNode),
+  resolve: fn(Filter) -> Result(EventValue, Nil),
+) -> Bool {
+  case children {
+    [] -> False
+    [child, ..rest] ->
+      case matches_node(child, resolve) {
+        True -> True
+        False -> matches_any_children(rest, resolve)
+      }
+  }
+}
+
+fn matches_node(
+  node: ConditionNode,
+  resolve: fn(Filter) -> Result(EventValue, Nil),
+) -> Bool {
+  case node {
+    Leaf(filter) -> matches_value(filter, resolve(filter))
+    Group(child) -> matches_condition(child, resolve)
+  }
 }
 
 fn result_is_ok(result: Result(a, b)) -> Bool {
