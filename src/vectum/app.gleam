@@ -37,6 +37,7 @@ pub fn run_command(arguments: List(String)) -> Nil {
     cli.DeliveriesList(path, status, destination, limit) ->
       ops_deliveries_list(path, status, destination, limit)
     cli.DeliveriesShow(path, id) -> ops_deliveries_show(path, id)
+    cli.Prune(path, dry_run) -> ops_prune(path, dry_run)
   }
 }
 
@@ -138,6 +139,38 @@ fn dead_delete(path: String, id: String) -> Nil {
 /// dead-letter / read-only 運用系は `[storage] path` のみ読む。secret 検証エラー時も操作できる。
 fn require_dead_store(path: String) -> storage.Store {
   require_store(ops_storage_path(path))
+}
+
+/// `vectum prune`: `[retention]` の保持日数を過ぎた terminal な Delivery と
+/// 孤児 Event を削除する。HMAC secret 不要で `[storage] path` + `[retention]`
+/// だけ読む(config.load_retention)。--dry-run は削除せず件数だけ表示する。
+fn ops_prune(path: String, dry_run: Bool) -> Nil {
+  case config.load_retention(path) {
+    Error(ConfigError(messages)) -> {
+      print_errors(path, messages)
+      env.halt(1)
+      panic as "unreachable"
+    }
+    Ok(#(storage_path, retention)) ->
+      case storage.retention_enabled(retention) {
+        False ->
+          io.println(
+            "no retention configured: set [retention] succeeded_days / "
+            <> "dead_letter_days / events_days to values > 0 to prune",
+          )
+        True -> {
+          let store = require_store(storage_path)
+          let result = case dry_run {
+            True -> storage.call_prune_dry_run(store, clock.now_ms(), retention)
+            False -> storage.call_prune(store, clock.now_ms(), retention)
+          }
+          case result {
+            Ok(counts) -> io.println(cli.format_prune(counts, dry_run))
+            Error(error) -> fail("failed to prune: " <> string.inspect(error))
+          }
+        }
+      }
+  }
 }
 
 /// 運用系コマンドの storage path 解決。失敗時は設定エラーを出して終了する。

@@ -24,6 +24,7 @@ fn base(timeout_ms: Int, destinations: List(config.Destination)) -> Config {
     routes: [],
     delivery: Policy(8, 1000, 60_000, timeout_ms, False),
     concurrency: 8,
+    retention: storage.Retention(0, 0, 0),
     warnings: [],
   )
 }
@@ -369,4 +370,44 @@ pub fn dead_metrics_snapshot_returns_error_test() {
   process.kill(pid)
   wait_until(fn() { process.is_alive(pid) == False }, 2000)
   let assert Error(Nil) = metrics.snapshot(m)
+}
+
+// --- #30: 自動 retention の実行 gate(純関数) ---
+
+/// dispatcher の retention_interval_ms と同じ値。
+const retention_interval_ms = 3_600_000
+
+pub fn prune_due_requires_configured_retention_test() {
+  // 未設定(全 0)なら時間が経っても実行しない
+  assert dispatcher.prune_due(storage.Retention(0, 0, 0), 1000, 0) == False
+  assert dispatcher.prune_due(
+      storage.Retention(0, 0, 0),
+      retention_interval_ms * 100,
+      0,
+    )
+    == False
+  // いずれか 1 つでも > 0 なら有効
+  assert dispatcher.prune_due(
+      storage.Retention(1, 0, 0),
+      retention_interval_ms,
+      0,
+    )
+    == True
+  assert dispatcher.prune_due(
+      storage.Retention(0, 0, 30),
+      retention_interval_ms,
+      0,
+    )
+    == True
+}
+
+pub fn prune_due_respects_interval_test() {
+  let retention = storage.Retention(7, 0, 0)
+  // 前回実行から 1 時間未満なら実行しない
+  assert dispatcher.prune_due(retention, retention_interval_ms - 1, 0) == False
+  assert dispatcher.prune_due(retention, 1000, 1000) == False
+  // ちょうど 1 時間で実行
+  assert dispatcher.prune_due(retention, retention_interval_ms, 0) == True
+  assert dispatcher.prune_due(retention, retention_interval_ms + 60_000, 0)
+    == True
 }

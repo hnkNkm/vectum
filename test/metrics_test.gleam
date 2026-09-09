@@ -16,16 +16,39 @@ pub fn prometheus_export_contains_required_series_test() {
       latency_count: 2,
       latency_buckets: [0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2],
       reaped: 0,
+      retention_deleted_deliveries: 0,
+      retention_deleted_events: 0,
     )
   let text = metrics.prometheus(snap, 7)
   assert string.contains(text, "events_received_total 3")
   assert string.contains(text, "events_rejected_total 1")
   assert string.contains(text, "deliveries_success_total 2")
   assert string.contains(text, "pending_deliveries 7")
+  // #30: retention 削除カウンタも公開される
+  assert string.contains(
+    text,
+    "# TYPE retention_deleted_deliveries_total counter",
+  )
+  assert string.contains(text, "retention_deleted_deliveries_total 0")
+  assert string.contains(text, "# TYPE retention_deleted_events_total counter")
+  assert string.contains(text, "retention_deleted_events_total 0")
   // 既存のミリ秒 sum / count は後方互換のためそのまま出す
   assert string.contains(text, "delivery_latency_milliseconds_sum 50")
   assert string.contains(text, "delivery_latency_milliseconds_count 2")
   assert string.contains(text, "# TYPE delivery_latency_seconds histogram")
+}
+
+// retention 削除の記録が累積され、prometheus 出力に反映されること。
+pub fn retention_deleted_counts_accumulate_test() {
+  let assert Ok(m) = metrics.start()
+  metrics.record_retention_deleted(m, 3, 1)
+  metrics.record_retention_deleted(m, 2, 4)
+  let assert Ok(snap) = metrics.snapshot(m)
+  assert snap.retention_deleted_deliveries == 5
+  assert snap.retention_deleted_events == 5
+  let text = metrics.prometheus(snap, 0)
+  assert string.contains(text, "retention_deleted_deliveries_total 5")
+  assert string.contains(text, "retention_deleted_events_total 5")
 }
 
 // 各境界ちょうど / 直上の値と 0ms を全境界に対して記録し、累積 bucket を検証する。
@@ -79,6 +102,8 @@ pub fn histogram_exposition_lines_test() {
       latency_count: 2,
       latency_buckets: [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
       reaped: 0,
+      retention_deleted_deliveries: 0,
+      retention_deleted_events: 0,
     )
   let text = metrics.prometheus(snap, 0)
   let expected =

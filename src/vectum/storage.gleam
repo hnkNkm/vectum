@@ -37,6 +37,17 @@ pub type Store {
   Store(subject: Subject(Message))
 }
 
+/// `[retention]` 設定。各区分の保持日数。0 は無期限保持を意味する。
+pub type Retention {
+  Retention(succeeded_days: Int, dead_letter_days: Int, events_days: Int)
+}
+
+/// prune 1 回(または dry-run 1 回)の削除対象件数。deliveries は
+/// succeeded / dead_letter の区分別。
+pub type PruneCounts {
+  PruneCounts(succeeded: Int, dead_letter: Int, events: Int)
+}
+
 pub type Message {
   Accept(
     reply: Subject(Result(List(Delivery), sqlight.Error)),
@@ -83,6 +94,17 @@ pub type Message {
   ListDead(reply: Subject(Result(List(Delivery), sqlight.Error)))
   RetryDead(reply: Subject(Result(Int, sqlight.Error)), id: String, now_ms: Int)
   DeleteDead(reply: Subject(Result(Int, sqlight.Error)), id: String)
+  // #30: retention prune。PruneDryRun は削除せず件数だけ返す(rollback)。
+  Prune(
+    reply: Subject(Result(PruneCounts, sqlight.Error)),
+    now_ms: Int,
+    retention: Retention,
+  )
+  PruneDryRun(
+    reply: Subject(Result(PruneCounts, sqlight.Error)),
+    now_ms: Int,
+    retention: Retention,
+  )
   PendingCount(reply: Subject(Result(Int, sqlight.Error)))
   Ping(reply: Subject(Result(Nil, sqlight.Error)))
   // #31: read-only ops CLI queries. 参照のみで状態を変更しない。
@@ -531,6 +553,127 @@ fn changed_rows(conn: sqlight.Connection) -> Result(Int, sqlight.Error) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #30: retention prune
+// 削除対象は succeeded / dead_letter の terminal な Delivery と、
+// 参照する Delivery が残っていない古い Event(孤児)だけ。
+// pending / delivering / retry_scheduled は絶対に消さない。
+// ---------------------------------------------------------------------------
+
+/// 1 日(ミリ秒)。日数はこの単位で now_ms から引いて cutoff にする。
+const ms_per_day = 86_400_000
+
+/// retention のいずれかの区分が 0 より大きければ自動 prune が有効。
+pub fn retention_enabled(retention: Retention) -> Bool {
+  let Retention(succeeded_days:, dead_letter_days:, events_days:) = retention
+  succeeded_days > 0 || dead_letter_days > 0 || events_days > 0
+}
+
+/// retention に従って terminal な行を削除する。1 トランザクションで
+/// deliveries → 孤児 events の順に消し、失敗時は全体をロールバックする。
+/// 日数 0 の区分は削除しない(無期限保持)。
+pub fn prune(
+  conn: sqlight.Connection,
+  now_ms: Int,
+  retention: Retention,
+) -> Result(PruneCounts, sqlight.Error) {
+  use _ <- result.try(sqlight.exec("begin immediate", conn))
+  let outcome = prune_in_tx(conn, now_ms, retention)
+  case outcome {
+    Ok(counts) ->
+      case sqlight.exec("commit", conn) {
+        Ok(_) -> Ok(counts)
+        Error(error) -> {
+          let _ = sqlight.exec("rollback", conn)
+          Error(error)
+        }
+      }
+    Error(error) -> {
+      let _ = sqlight.exec("rollback", conn)
+      Error(error)
+    }
+  }
+}
+
+/// prune と同じ削除判定を実行して件数だけ返し、トランザクションは
+/// ロールバックする(dry-run)。どの行も変更しない。
+pub fn prune_dry_run(
+  conn: sqlight.Connection,
+  now_ms: Int,
+  retention: Retention,
+) -> Result(PruneCounts, sqlight.Error) {
+  use _ <- result.try(sqlight.exec("begin immediate", conn))
+  let outcome = prune_in_tx(conn, now_ms, retention)
+  let _ = sqlight.exec("rollback", conn)
+  outcome
+}
+
+fn prune_in_tx(
+  conn: sqlight.Connection,
+  now_ms: Int,
+  retention: Retention,
+) -> Result(PruneCounts, sqlight.Error) {
+  let Retention(succeeded_days:, dead_letter_days:, events_days:) = retention
+  use succeeded <- result.try(case succeeded_days > 0 {
+    True ->
+      delete_old_deliveries(
+        conn,
+        "succeeded",
+        now_ms - succeeded_days * ms_per_day,
+      )
+    False -> Ok(0)
+  })
+  use dead_letter <- result.try(case dead_letter_days > 0 {
+    True ->
+      delete_old_deliveries(
+        conn,
+        "dead_letter",
+        now_ms - dead_letter_days * ms_per_day,
+      )
+    False -> Ok(0)
+  })
+  // 直前に消した Delivery の Event も孤児として対象になる(FK 安全な順序)。
+  use events <- result.try(case events_days > 0 {
+    True -> delete_old_orphan_events(conn, now_ms - events_days * ms_per_day)
+    False -> Ok(0)
+  })
+  Ok(PruneCounts(succeeded:, dead_letter:, events:))
+}
+
+/// status が一致し updated_at が cutoff より前の Delivery を削除し、件数を返す。
+fn delete_old_deliveries(
+  conn: sqlight.Connection,
+  status: String,
+  cutoff_ms: Int,
+) -> Result(Int, sqlight.Error) {
+  use _ <- result.try(sqlight.query(
+    "delete from deliveries where status = ? and updated_at < ?",
+    on: conn,
+    with: [sqlight.text(status), sqlight.int(cutoff_ms)],
+    expecting: decode.success(Nil),
+  ))
+  changed_rows(conn)
+}
+
+/// received_at が cutoff より前で、参照する Delivery が 1 件も残っていない
+/// Event だけを削除し、件数を返す。FK 制約を壊さないよう孤児のみ対象。
+fn delete_old_orphan_events(
+  conn: sqlight.Connection,
+  cutoff_ms: Int,
+) -> Result(Int, sqlight.Error) {
+  use _ <- result.try(sqlight.query(
+    "delete from events
+     where received_at < ?
+       and not exists (
+         select 1 from deliveries where deliveries.event_id = events.id
+       )",
+    on: conn,
+    with: [sqlight.int(cutoff_ms)],
+    expecting: decode.success(Nil),
+  ))
+  changed_rows(conn)
+}
+
 pub fn count_pending(conn: sqlight.Connection) -> Result(Int, sqlight.Error) {
   use rows <- result.try(
     sqlight.query(
@@ -731,6 +874,24 @@ pub fn call_delete_dead(
   try_call(store.subject, 5000, fn(reply) { DeleteDead(reply:, id:) })
 }
 
+pub fn call_prune(
+  store: Store,
+  now_ms: Int,
+  retention: Retention,
+) -> Result(PruneCounts, sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) { Prune(reply:, now_ms:, retention:) })
+}
+
+pub fn call_prune_dry_run(
+  store: Store,
+  now_ms: Int,
+  retention: Retention,
+) -> Result(PruneCounts, sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) {
+    PruneDryRun(reply:, now_ms:, retention:)
+  })
+}
+
 pub fn call_pending_count(store: Store) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, PendingCount)
 }
@@ -767,6 +928,10 @@ fn handle(
     RetryDead(reply:, id:, now_ms:) ->
       process.send(reply, retry_dead(conn, id, now_ms))
     DeleteDead(reply:, id:) -> process.send(reply, delete_dead(conn, id))
+    Prune(reply:, now_ms:, retention:) ->
+      process.send(reply, prune(conn, now_ms, retention))
+    PruneDryRun(reply:, now_ms:, retention:) ->
+      process.send(reply, prune_dry_run(conn, now_ms, retention))
     PendingCount(reply:) -> process.send(reply, count_pending(conn))
     Ping(reply:) -> process.send(reply, ping(conn))
     ReadStatus(reply:) -> process.send(reply, status_snapshot(conn))

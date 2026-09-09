@@ -22,6 +22,9 @@ pub type Snapshot {
     // 要素は histogram_bucket_edges_ms の各境界(ミリ秒)に対応し、境界以下のサンプル数を数える。
     latency_buckets: List(Int),
     reaped: Int,
+    // #30: retention prune で削除した行数(累積)。
+    retention_deleted_deliveries: Int,
+    retention_deleted_events: Int,
   )
 }
 
@@ -33,6 +36,7 @@ pub type Message {
   DeliveryRetry
   DeliveryDead
   Reaped(Int)
+  RetentionDeleted(deliveries: Int, events: Int)
   Read(reply: Subject(Snapshot))
 }
 
@@ -67,6 +71,8 @@ pub fn empty() -> Snapshot {
     latency_count: 0,
     latency_buckets: zero_buckets(),
     reaped: 0,
+    retention_deleted_deliveries: 0,
+    retention_deleted_events: 0,
   )
 }
 
@@ -97,6 +103,15 @@ pub fn record_dead(metrics: Metrics) -> Nil {
 /// 滞留 delivering を再開した数を記録する。
 pub fn record_reaped(metrics: Metrics, count: Int) -> Nil {
   process.send(metrics.subject, Reaped(count))
+}
+
+/// retention prune で削除した Delivery / Event 数を記録する。
+pub fn record_retention_deleted(
+  metrics: Metrics,
+  deliveries: Int,
+  events: Int,
+) -> Nil {
+  process.send(metrics.subject, RetentionDeleted(deliveries:, events:))
 }
 
 /// process.call は応答なし・先方死で panic するため、監視付き select で待つ。
@@ -153,6 +168,21 @@ pub fn prometheus(snapshot: Snapshot, pending: Int) -> String {
     ),
     type_line("deliveries_reaped_total", "counter"),
     metric("deliveries_reaped_total", snapshot.reaped),
+    comment(
+      "retention_deleted_deliveries_total",
+      "Terminal deliveries deleted by retention pruning",
+    ),
+    type_line("retention_deleted_deliveries_total", "counter"),
+    metric(
+      "retention_deleted_deliveries_total",
+      snapshot.retention_deleted_deliveries,
+    ),
+    comment(
+      "retention_deleted_events_total",
+      "Orphan events deleted by retention pruning",
+    ),
+    type_line("retention_deleted_events_total", "counter"),
+    metric("retention_deleted_events_total", snapshot.retention_deleted_events),
     comment("delivery_latency_milliseconds_sum", "Delivery latency sum"),
     type_line("delivery_latency_milliseconds_sum", "counter"),
     metric("delivery_latency_milliseconds_sum", snapshot.latency_sum_ms),
@@ -183,6 +213,13 @@ fn handle(state: Snapshot, message: Message) -> actor.Next(Snapshot, Message) {
     DeliveryDead ->
       Snapshot(..state, deliveries_dead: state.deliveries_dead + 1)
     Reaped(count) -> Snapshot(..state, reaped: state.reaped + count)
+    RetentionDeleted(deliveries, events) ->
+      Snapshot(
+        ..state,
+        retention_deleted_deliveries: state.retention_deleted_deliveries
+          + deliveries,
+        retention_deleted_events: state.retention_deleted_events + events,
+      )
     DeliverySuccess(latency_ms) ->
       Snapshot(
         ..state,

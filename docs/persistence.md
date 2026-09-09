@@ -49,4 +49,23 @@ SQLite は WAL モードかつ `synchronous = full` で運用する。各コミ�
 
 ## 保持期間
 
-v0.1 は自動 retention を持たない。運用で SQLite ファイルを管理する。
+terminal 状態の行は `[retention]` 設定に従って自動 / 手動で削除できる(#30)。
+
+- `deliveries.status = 'succeeded'` は `updated_at` が
+  `succeeded_days` より古ければ削除
+- `deliveries.status = 'dead_letter'` は `updated_at` が
+  `dead_letter_days` より古ければ削除
+- `events` は `received_at` が `events_days` より古く、参照する
+  Delivery が 1 件も残っていない(孤児の)ものだけ削除
+
+`pending` / `delivering` / `retry_scheduled` は削除しない。日数が未設定か
+0 の区分は無期限保持(既定、v0.1 の挙動と同じ)。負数は設定エラー。
+
+削除は 1 トランザクションで「Delivery → 孤児になった Event」の順に実行する
+(外部キー制約を壊さない)。途中で失敗すると全体がロールバックされる。
+
+自動実行は dispatcher が 1 時間に最大 1 回おこない、ログ `retention_pruned`
+とメトリクス `retention_deleted_deliveries_total` /
+`retention_deleted_events_total` で観測できる。手動実行は
+`vectum prune [--dry-run]`(HMAC secret 不要、`[storage] path` と
+`[retention]` だけ読む)。詳細は [cli.md](./cli.md) / [operations.md](./operations.md)。

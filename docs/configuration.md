@@ -47,7 +47,24 @@ max_backoff_ms = 60000
 timeout_ms = 10000
 jitter = true
 concurrency = 8
+
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
 ```
+
+`[retention]` は完了済みデータの保持日数(整数・日)を設定する(#30)。
+未設定または 0 の区分は無期限保持(従来どおり)。
+
+- `succeeded_days`: `succeeded` の Delivery を `updated_at` から何日残すか
+- `dead_letter_days`: `dead_letter` の Delivery を `updated_at` から何日残すか
+- `events_days`: 参照する Delivery が残っていない Event(孤児)を
+  `received_at` から何日残すか
+
+0 より大きい値が 1 つでもあると、dispatcher が 1 時間に最大 1 回の頻度で
+自動削除をおこなう。手動実行は `vectum prune [--dry-run]`。削除の意味論は
+[persistence.md](./persistence.md)、運用は [operations.md](./operations.md)。
 
 `[[routes]]` のフィルタ条件には、従来の AND 専用 `[[routes.filters]]` のほか、
 AND / OR をネストできる `[routes.condition]` を 1 つ書ける。両方は併設できない。
@@ -111,6 +128,7 @@ auth_bearer_env = "NOTIFY_API_TOKEN"
   以外では必須であること
 - Destination URL が http(s) であること
 - timeout / retry が正の値であること
+- `[retention]` の値が 0 以上の整数であること(負数はエラー)
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）
 - `hmac_header` が空・空白でないこと（Source / Destination とも）
 - `auth_bearer` / `auth_bearer_env` の併設、空・空白のみの値、`auth_bearer_env` が指す環境変数の欠落は設定エラー（`hmac_secret` と同じ規則）
