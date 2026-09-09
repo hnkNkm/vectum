@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/erlang/process
+import gleam/option.{None}
 import vectum/clock
 import vectum/config
 import vectum/delivery
@@ -117,7 +118,9 @@ pub fn tick_does_nothing_when_shutting_down_test() {
   shutdown.set_shutting_down(True)
 
   let assert Ok(0) =
-    dispatcher.tick(cfg(), store, m, fn(_outgoing) { delivery.Status(200) })
+    dispatcher.tick(cfg(), store, m, fn(_outgoing) {
+      delivery.Status(200, None)
+    })
   // tick 後も該当 Delivery は pending のまま(claim されていない)
   let assert Ok(1) = storage.call_pending_count(store)
 

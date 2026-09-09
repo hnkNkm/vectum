@@ -1,7 +1,7 @@
 import gleam/http/request
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import vectum/config.{type Destination, HttpDestination}
@@ -13,8 +13,10 @@ import vectum/retry.{type Policy}
 /// 配送 POST は直接 httpc を呼ぶ Erlang FFI を使う。OTP の httpc 既定は
 /// autoretry = infinity で、503 + Retry-After をタイムアウト内に透過再送する
 /// (F1)。vectum のリトライ勘定・backoff から隠れる再送を防ぐため無効化し、
-/// 503 を Status(503) として表面化させる。https は FFI 側でサーバ証明書を
-/// システム CA ストアに対して検証する。
+/// 503 を Status(503) として表面化させる。透過リトライの代わりに、
+/// Retry-After は vectum のポリシー層で尊重する (#37): FFI が応答ヘッダを
+/// 解釈し、有効なら Status に delay (ms) のヒントを載せて返す。
+/// https は FFI 側でサーバ証明書をシステム CA ストアに対して検証する。
 @external(erlang, "vectum_httpc_ffi", "post")
 fn post(
   url: String,
@@ -22,7 +24,7 @@ fn post(
   content_type: String,
   body: String,
   timeout_ms: Int,
-) -> Result(Int, String)
+) -> Result(#(Int, Option(Int)), String)
 
 pub type Outgoing {
   Outgoing(
@@ -34,7 +36,10 @@ pub type Outgoing {
 }
 
 pub type SendResult {
-  Status(Int)
+  /// HTTP 応答。`retry_after_ms` は FFI が retry 対象 (408/429/5xx) の
+  /// 応答ヘッダ Retry-After から解釈した delay (ms)。有効なときのみ
+  /// `Some` で、`None` はヘッダなし・不正・形式不明・非 retry 対象を表す。
+  Status(status: Int, retry_after_ms: Option(Int))
   TimedOut
   ConnectFailed(String)
 }
@@ -88,10 +93,25 @@ pub fn decide(
         False ->
           RetryScheduled(
             attempts,
-            now_ms + retry.backoff_ms(policy, attempts, jitter_unit),
+            now_ms
+              + retry.next_delay_ms(
+              policy,
+              attempts,
+              jitter_unit,
+              retry_after_ms(result),
+            ),
             error,
           )
       }
+  }
+}
+
+/// 応答に載っている Retry-After delay (ms)。タイムアウト・接続失敗や
+/// ヒントの無いステータスは None。decide の Retry 分岐でのみ参照される。
+fn retry_after_ms(result: SendResult) -> Option(Int) {
+  case result {
+    Status(_, retry_after_ms) -> retry_after_ms
+    TimedOut | ConnectFailed(_) -> None
   }
 }
 
@@ -112,7 +132,7 @@ pub fn send_http(outgoing: Outgoing) -> SendResult {
           outgoing.timeout_ms,
         )
       {
-        Ok(status) -> Status(status)
+        Ok(#(status, retry_after_ms)) -> Status(status, retry_after_ms)
         Error("timeout") -> TimedOut
         Error(reason) -> ConnectFailed(reason)
       }
@@ -122,7 +142,7 @@ pub fn send_http(outgoing: Outgoing) -> SendResult {
 
 fn to_attempt(result: SendResult) -> retry.AttemptResult {
   case result {
-    Status(status) -> retry.HttpStatus(status)
+    Status(status, _) -> retry.HttpStatus(status)
     TimedOut -> retry.Timeout
     ConnectFailed(_) -> retry.ConnectionError
   }
@@ -130,7 +150,18 @@ fn to_attempt(result: SendResult) -> retry.AttemptResult {
 
 fn describe(result: SendResult) -> String {
   case result {
-    Status(status) -> "http " <> int.to_string(status)
+    // クランプが起きたことは last_error の説明文で分かるようにする (#37)。
+    Status(status, Some(retry_after_ms))
+      if retry_after_ms > retry.retry_after_max_ms
+    ->
+      "http "
+      <> int.to_string(status)
+      <> " retry-after "
+      <> int.to_string(retry_after_ms)
+      <> "ms clamped to "
+      <> int.to_string(retry.retry_after_max_ms)
+      <> "ms"
+    Status(status, _) -> "http " <> int.to_string(status)
     TimedOut -> "timeout"
     ConnectFailed(reason) -> reason
   }

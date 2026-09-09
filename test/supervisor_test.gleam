@@ -1,6 +1,7 @@
 //// Supervisor 木の起動と障害復旧の検証。
 
 import gleam/erlang/process
+import gleam/option.{None}
 import gleam/result
 import vectum/config
 import vectum/delivery
@@ -34,7 +35,7 @@ fn cfg() -> config.Config {
 }
 
 fn stub_send(_outgoing: delivery.Outgoing) -> delivery.SendResult {
-  delivery.Status(200)
+  delivery.Status(200, None)
 }
 
 /// Storage actor を強制 kill しても、Supervisor が再起動し、

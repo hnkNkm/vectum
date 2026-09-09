@@ -17,7 +17,7 @@
 | Declarative Routing | 満たす | TOML `[[routes]]` |
 | Field Filtering | 満たす | Data の dotted path と `metadata.` プレフィックスによる Metadata 条件 |
 | Fan-out | 満たす | 複数 Destination + dest 重複排除 |
-| Retry | 満たす | exp backoff + equal jitter |
+| Retry | 満たす | exp backoff + equal jitter。有効な `Retry-After` はサーバ指定時刻で上書き(#37) |
 | Timeout | 満たす | Destination または `[delivery].timeout_ms` |
 | Dead Letter | 満たす | CLI から list / retry / delete |
 | At-least-once Delivery | 満たす | 起動時に `delivering` を復旧 |
@@ -37,6 +37,7 @@
 - フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path、AND のみ
 - `metadata.<key>` パスで HTTP ヘッダ由来の Metadata をフィルタできる
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
+- retry 対象の応答では `Retry-After`(delta-seconds / HTTP-date)を尊重する。有効なら backoff・jitter なしでサーバ指定時刻に次回試行、上限 24h 超過はクランプして `last_error` に記録。不正・欠落は backoff へ、過去の HTTP-date は即時(#37)
 - Event 取得失敗や未知 Destination などの内部エラーも同じ backoff / `max_attempts` を適用する
 - Destination へ `X-Event-Id` と `Idempotency-Key` を付与
 - SIGTERM / SIGINT で受付停止(503)→ 実行中ワーカーの完了待ち → 終了。猶予は `VECTUM_SHUTDOWN_GRACE_MS`(既定 10 秒)
@@ -60,7 +61,7 @@
 
 ## 正しく対象外にしているもの
 
-Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、Retry-After、ホットリロード、自動 retention、Transform Engine。
+Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、ホットリロード、自動 retention、Transform Engine。
 
 ## 次に埋めるなら
 

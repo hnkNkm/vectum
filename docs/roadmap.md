@@ -9,6 +9,7 @@
 - Filtering
 - Fan-out
 - Retry
+- Retry-After(#37)
 - Dead Letter
 - SQLite
 - HMAC
@@ -22,7 +23,6 @@
 
 - MQTT Adapter
 - NATS Adapter
-- Retry-After
 - より詳しい CLI 参照
 - Event transformation
 - Configuration hot reload
@@ -54,6 +54,5 @@ map."orderNo" = "order_id"
 - MQTT / NATS / SQS / Kafka / WebSocket
 - クラスタ
 - exactly-once
-- Retry-After
 - ホットリロード
 - 自動 retention

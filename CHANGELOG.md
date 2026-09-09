@@ -8,6 +8,7 @@
 - 空の `hmac_header` を設定検証でエラーにした(F4)
 - SQLite を `synchronous = full` で運用し、各コミットを fsync する完全永続化にした(F3)
 - httpc の自動リトライを無効化し、`Retry-After` による暗黙リトライを止めた。配送のリトライは vectum の backoff に一元化。Destination への TLS 接続は証明書検証を明示的に有効化(F1)
+- retry 対象の応答 (408/429/5xx) で `Retry-After` を尊重するようにした。delta-seconds / HTTP-date に対応し、有効なら backoff・jitter の代わりにサーバ指定時刻 (`now + delay`、jitter なし) へ次回試行を予約する。上限は 24h (`retry_after_max_ms`) で、超過はクランプして last_error に記録。ヘッダなし・不正は従来の exponential backoff へ、過去の HTTP-date は 0ms (即時) として扱う(#37)
 - claim 世代トークンによる fencing を導入。`claim_due` は `updated_at` を必ず直前の値より進め(`max(?, updated_at + 1)`)、`mark_success` / `mark_retry` / `mark_dead` は claim 時の token が現在値と一致する行にだけ効く。reaper で奪取された旧ワーカーの遅延完了は 0 件になり、新しい claim の結果を上書きしない(F2)
 - 開発者向けガイド AGENTS.md を追加し、現行実装(障害時再起動・recover・reaper 等)に追従させた(#74)
 - Dispatcher がワーカーを `spawn_unlinked` で生成し、ワーカー panic 時も concurrency 枠と slot を確実に解放するよう変更。Dispatcher 側のクラッシュでもワーカーを巻き込まない(#43)
