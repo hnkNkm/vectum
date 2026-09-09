@@ -17,6 +17,25 @@ X-Hub-Signature-256: sha256=<hex>
 
 `hmac_header` で変更できる。受信時の Metadata からは HMAC ヘッダ、`Authorization`、`Cookie` を除外する。
 
+## Bearer Token
+
+Source 受信と Destination 配送の両方で `Authorization: Bearer <token>` を使える。
+
+```text
+Authorization: Bearer <token>
+```
+
+設定は `auth_bearer`（インライン）または `auth_bearer_env`（環境変数参照）。規則は HMAC secret と同じ: 併設は拒否、空・空白のみの値は拒否、`auth_bearer_env` が指す変数が無いと `validate` / `run` は失敗する。秘密を TOML に直書きせず環境変数を使うことを推奨する。
+
+| 用途 | 挙動 |
+| --- | --- |
+| Source | `Authorization` の scheme を大小文字非依存で解釈し、token を定数時間比較（`crypto.secure_compare`、hmac と同様）で検証する。欠落・不一致は `401` で拒否 |
+| Destination | 設定されていれば配送リクエストに常に `Authorization: Bearer <token>` を付与する |
+
+HMAC と Bearer は併用できる。両方設定した Source は**両方の検証に合格しないと受理しない（AND）**。Destination は両方設定していれば署名ヘッダと Authorization の両方を送る。
+
+token は構造化ログ・Event Metadata・エラー文言・`last_error` に一切載せない。受信 Metadata は `Authorization` ヘッダを設定の有無にかかわらず常に除外する。
+
 ## TLS
 
 Destination への HTTPS は inets httpc 経由の FFI (`vectum_httpc_ffi`) で送る。
@@ -42,4 +61,4 @@ mist 6 の `read_body` は `Content-Length` 無しを 0 とみなし chunked を
 
 ## 認証モデル
 
-v0.1 の Source 認証は HMAC の有無だけ。`hmac_secret` / `hmac_secret_env` が無ければ検証しない。mTLS、Bearer、IP allowlist は将来候補。
+Source 認証は Source ごとの設定による。`hmac_secret` / `hmac_secret_env` が無ければ HMAC は検証せず、`auth_bearer` / `auth_bearer_env` が無ければ Bearer は検証しない。両方設定した場合は両方の合格が必要（AND）。mTLS、IP allowlist は将来候補。

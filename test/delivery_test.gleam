@@ -32,6 +32,7 @@ pub fn outgoing_includes_idempotency_headers_test() {
       timeout_ms: Some(1234),
       hmac_secret: Some("out"),
       hmac_header: "X-Vectum-Signature",
+      bearer_token: None,
     )
   let outgoing = delivery.build_outgoing(dest, ev(), 9999)
   assert outgoing.url == "http://127.0.0.1:9/events"
@@ -41,6 +42,67 @@ pub fn outgoing_includes_idempotency_headers_test() {
   assert list.key_find(outgoing.headers, "content-type")
     == Ok("application/json")
   let assert Ok(_) = list.key_find(outgoing.headers, "x-vectum-signature")
+}
+
+// ---- Bearer Token 認証 (#38) ----
+
+/// ヘッダ名は小文字 (`authorization`)、値は RFC 6750 どおり `Bearer <token>`。
+pub fn outgoing_attaches_bearer_header_test() {
+  let dest =
+    HttpDestination(
+      name: "audit",
+      url: "http://127.0.0.1:9/events",
+      timeout_ms: None,
+      hmac_secret: None,
+      hmac_header: "X-Vectum-Signature",
+      bearer_token: Some("tok-out"),
+    )
+  let outgoing = delivery.build_outgoing(dest, ev(), 9999)
+  assert list.key_find(outgoing.headers, "authorization")
+    == Ok("Bearer tok-out")
+  assert list.key_find(outgoing.headers, "Authorization") == Error(Nil)
+  // token は authorization の値以外のヘッダに漏れない
+  let leaked =
+    outgoing.headers
+    |> list.filter(fn(pair) {
+      pair.0 != "authorization" && string.contains(pair.1, "tok-out")
+    })
+  assert leaked == []
+}
+
+/// HMAC と Bearer を両方設定した Destination は両方のヘッダを付与する。
+pub fn outgoing_attaches_hmac_and_bearer_together_test() {
+  let dest =
+    HttpDestination(
+      name: "audit",
+      url: "http://127.0.0.1:9/events",
+      timeout_ms: None,
+      hmac_secret: Some("out"),
+      hmac_header: "X-Vectum-Signature",
+      bearer_token: Some("tok-out"),
+    )
+  let outgoing = delivery.build_outgoing(dest, ev(), 9999)
+  assert list.key_find(outgoing.headers, "authorization")
+    == Ok("Bearer tok-out")
+  let assert Ok(signature) =
+    list.key_find(outgoing.headers, "x-vectum-signature")
+  assert string.starts_with(signature, "sha256=")
+}
+
+/// 送信ヘッダ名は全て小文字 (httpc 経由の配送と Metadata 正規化に合わせる)。
+pub fn outgoing_header_names_are_lowercase_test() {
+  let dest =
+    HttpDestination(
+      name: "audit",
+      url: "http://127.0.0.1:9/events",
+      timeout_ms: None,
+      hmac_secret: Some("out"),
+      hmac_header: "X-Vectum-Signature",
+      bearer_token: Some("tok-out"),
+    )
+  let outgoing = delivery.build_outgoing(dest, ev(), 9999)
+  let names = list.map(outgoing.headers, fn(pair) { pair.0 })
+  assert list.all(names, fn(name) { name == string.lowercase(name) })
 }
 
 pub fn decide_success_retry_and_dead_test() {
@@ -140,6 +202,7 @@ pub fn default_timeout_used_when_destination_omits_it_test() {
       timeout_ms: None,
       hmac_secret: None,
       hmac_header: "X-Vectum-Signature",
+      bearer_token: None,
     )
   assert delivery.build_outgoing(dest, ev(), 4321).timeout_ms == 4321
 }

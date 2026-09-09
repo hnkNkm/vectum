@@ -44,6 +44,7 @@ pub type Source {
     type_fixed: Option(String),
     hmac_secret: Option(String),
     hmac_header: String,
+    bearer_token: Option(String),
   )
 }
 
@@ -54,6 +55,7 @@ pub type Destination {
     timeout_ms: Option(Int),
     hmac_secret: Option(String),
     hmac_header: String,
+    bearer_token: Option(String),
   )
 }
 
@@ -268,7 +270,18 @@ fn decode_source(
     ["hmac_header"],
     default_hmac_source_header,
   ))
-  use hmac_secret <- result.try(resolve_secret(table, name, "source", getenv))
+  use hmac_secret <- result.try(resolve_hmac_secret(
+    table,
+    name,
+    "source",
+    getenv,
+  ))
+  use bearer_token <- result.try(resolve_bearer_token(
+    table,
+    name,
+    "source",
+    getenv,
+  ))
   Ok(Source(
     name:,
     path:,
@@ -277,6 +290,7 @@ fn decode_source(
     type_fixed:,
     hmac_secret:,
     hmac_header:,
+    bearer_token:,
   ))
 }
 
@@ -301,7 +315,13 @@ fn decode_destination(
     ["hmac_header"],
     default_hmac_dest_header,
   ))
-  use hmac_secret <- result.try(resolve_secret(
+  use hmac_secret <- result.try(resolve_hmac_secret(
+    table,
+    name,
+    "destination",
+    getenv,
+  ))
+  use bearer_token <- result.try(resolve_bearer_token(
     table,
     name,
     "destination",
@@ -309,7 +329,14 @@ fn decode_destination(
   ))
   case dest_type {
     "http" ->
-      Ok(HttpDestination(name:, url:, timeout_ms:, hmac_secret:, hmac_header:))
+      Ok(HttpDestination(
+        name:,
+        url:,
+        timeout_ms:,
+        hmac_secret:,
+        hmac_header:,
+        bearer_token:,
+      ))
     other ->
       Error([
         "destination " <> name <> " has unsupported adapter type: " <> other,
@@ -549,14 +576,53 @@ fn toml_value(toml: Toml) -> Result(EventValue, List(String)) {
   }
 }
 
-fn resolve_secret(
+/// `hmac_secret` / `hmac_secret_env` を `resolve_secret_pair` で解決する。
+fn resolve_hmac_secret(
   table: Dict(String, Toml),
   name: String,
   kind: String,
   getenv: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), List(String)) {
-  use inline <- result.try(opt_string_opt(table, ["hmac_secret"]))
-  use env_name <- result.try(opt_string_opt(table, ["hmac_secret_env"]))
+  resolve_secret_pair(
+    table,
+    name,
+    kind,
+    "hmac_secret",
+    "hmac_secret_env",
+    getenv,
+  )
+}
+
+/// `auth_bearer` / `auth_bearer_env` を `resolve_secret_pair` で解決する。
+fn resolve_bearer_token(
+  table: Dict(String, Toml),
+  name: String,
+  kind: String,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Option(String), List(String)) {
+  resolve_secret_pair(
+    table,
+    name,
+    kind,
+    "auth_bearer",
+    "auth_bearer_env",
+    getenv,
+  )
+}
+
+/// inline キーと env 参照キーのペアを解決する。規則は HMAC secret と共通:
+/// 併設は意図が曖昧なため拒否、空文字・空白のみの値は無意味なため拒否、
+/// env が指す変数の欠落は設定エラー。エラー文言に値は一切載せない。
+fn resolve_secret_pair(
+  table: Dict(String, Toml),
+  name: String,
+  kind: String,
+  inline_key: String,
+  env_key: String,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Option(String), List(String)) {
+  use inline <- result.try(opt_string_opt(table, [inline_key]))
+  use env_name <- result.try(opt_string_opt(table, [env_key]))
   // inline と env 参照の併設は意図が曖昧なため拒否する。
   // 空文字の secret は検証鍵として無意味なため拒否する。
   case inline, env_name {
@@ -565,7 +631,11 @@ fn resolve_secret(
         kind
         <> " "
         <> name
-        <> " sets both hmac_secret and hmac_secret_env ("
+        <> " sets both "
+        <> inline_key
+        <> " and "
+        <> env_key
+        <> " ("
         <> var
         <> "); use only one",
       ])
@@ -594,7 +664,7 @@ fn resolve_secret(
       }
     Some(value), None ->
       case string.trim(value) {
-        "" -> Error([kind <> " " <> name <> " has empty hmac_secret"])
+        "" -> Error([kind <> " " <> name <> " has empty " <> inline_key])
         _ -> Ok(Some(value))
       }
     None, None -> Ok(None)
@@ -1023,6 +1093,8 @@ const source_keys = [
   "hmac_header",
   "hmac_secret",
   "hmac_secret_env",
+  "auth_bearer",
+  "auth_bearer_env",
 ]
 
 const destination_keys = [
@@ -1033,6 +1105,8 @@ const destination_keys = [
   "hmac_header",
   "hmac_secret",
   "hmac_secret_env",
+  "auth_bearer",
+  "auth_bearer_env",
 ]
 
 const route_keys = [

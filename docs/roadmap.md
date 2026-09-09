@@ -14,6 +14,7 @@
 - Dead Letter
 - SQLite
 - HMAC
+- Bearer Token 認証（Source / Destination、#38）
 - CLI
 - Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`、#31)
 - Metrics

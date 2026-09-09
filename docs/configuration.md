@@ -75,6 +75,30 @@ group ノードは `op`(`all` / `any`)と `filters`(leaf または group の配�
 
 ログは常に構造化 JSON を標準出力へ出す。`[log]` セクションは未実装。
 
+## 認証（HMAC / Bearer Token）
+
+Source / Destination には認証用の秘密を設定できる。検証規則はすべて同じ:
+
+- `hmac_secret` / `hmac_secret_env` — HMAC 署名鍵（Source は受信検証、Destination は署名付与）
+- `auth_bearer` / `auth_bearer_env` — Bearer Token。Source は受信時に `Authorization: Bearer <token>` を検証し、Destination は配送時に同ヘッダを付与する
+
+インライン（`hmac_secret` / `auth_bearer`）と環境変数参照（`*_env`）は**併設できない**。値が空・空白のみの場合も設定エラー。`*_env` が指す環境変数が存在しない場合も起動時エラーになる。どちらも未設定なら検証・付与しない。
+
+HMAC と Bearer は同時に設定できる。Source は両方の検証に合格しないと受理しない（AND）。Destination は両方のヘッダを送る。
+
+```toml
+[[sources]]
+name = "internal-api"
+type_from_json = "type"
+auth_bearer_env = "VECTUM_SOURCE_TOKEN"
+
+[[destinations]]
+name = "notify-api"
+type = "http"
+url = "https://example.invalid/events"
+auth_bearer_env = "NOTIFY_API_TOKEN"
+```
+
 ## 起動時検証
 
 - Source / Destination / Route 名の重複、Source の受信パス重複・予約パス衝突
@@ -89,6 +113,7 @@ group ノードは `op`(`all` / `any`)と `filters`(leaf または group の配�
 - timeout / retry が正の値であること
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）
 - `hmac_header` が空・空白でないこと（Source / Destination とも）
+- `auth_bearer` / `auth_bearer_env` の併設、空・空白のみの値、`auth_bearer_env` が指す環境変数の欠落は設定エラー（`hmac_secret` と同じ規則）
 - Destination `type` が `http` であること
 
 検証に失敗すると起動しない。一方、既知セクション内の未知キーは
