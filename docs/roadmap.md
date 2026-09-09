@@ -12,6 +12,7 @@
 - SQLite
 - HMAC
 - CLI
+- Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`、#31)
 - Metrics
 
 充足の細部は [spec-compliance.md](./spec-compliance.md)。
@@ -53,7 +54,6 @@ map."orderNo" = "order_id"
 - MQTT / NATS / SQS / Kafka / WebSocket
 - クラスタ
 - exactly-once
-- `status` / `events list` / `deliveries list`
 - Retry-After
 - ホットリロード
 - 自動 retention

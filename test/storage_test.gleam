@@ -1,7 +1,7 @@
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import simplifile
 import sqlight
 import vectum/event
@@ -377,4 +377,193 @@ pub fn claim_token_strictly_increases_on_same_ms_requeue_test() {
   let assert Ok([claim_b]) = storage.claim_due(conn, 11_000, 1)
   assert claim_b.updated_at == 11_001
   assert claim_b.updated_at > claim_a.updated_at
+/// --- #31: read-only ops CLI 用クエリ ---
+fn accept_at(
+  conn: sqlight.Connection,
+  id: String,
+  source: String,
+  event_type: String,
+  destination: String,
+  now_ms: Int,
+) -> Nil {
+  let ev =
+    event.Event(
+      id:,
+      source:,
+      event_type:,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      data: event.Object(dict.from_list([#("ref", event.String("main"))])),
+      metadata: dict.new(),
+    )
+  let assert Ok([_]) =
+    storage.accept(conn, ev, [destination], now_ms, [id <> "-d"])
+  Nil
+}
+
+pub fn list_events_orders_and_filters_test() {
+  use conn <- with_db
+  accept_at(conn, "e-early", "github", "push", "ci", 1000)
+  accept_at(conn, "e-mid", "github", "pull_request", "audit", 2000)
+  accept_at(conn, "e-late", "gitlab", "push", "ci", 3000)
+
+  // 受信の新しい順
+  let assert Ok(all) = storage.list_events(conn, None, None, 10)
+  assert list.map(all, fn(e) { e.id }) == ["e-late", "e-mid", "e-early"]
+
+  // source / type フィルタ
+  let assert Ok(github) = storage.list_events(conn, Some("github"), None, 10)
+  assert list.map(github, fn(e) { e.id }) == ["e-mid", "e-early"]
+  let assert Ok(pushes) = storage.list_events(conn, None, Some("push"), 10)
+  assert list.map(pushes, fn(e) { e.id }) == ["e-late", "e-early"]
+  let assert Ok(both) =
+    storage.list_events(conn, Some("github"), Some("push"), 10)
+  assert list.map(both, fn(e) { e.id }) == ["e-early"]
+
+  // limit で先頭 N 件だけ返る
+  let assert Ok(limited) = storage.list_events(conn, None, None, 2)
+  assert list.map(limited, fn(e) { e.id }) == ["e-late", "e-mid"]
+}
+
+pub fn list_deliveries_filters_status_destination_and_limit_test() {
+  use conn <- with_db
+  accept_at(conn, "d-e1", "github", "push", "ci", 1000)
+  accept_at(conn, "d-e2", "github", "push", "audit", 2000)
+  accept_at(conn, "d-e3", "github", "push", "ci", 3000)
+
+  // e1 の Delivery を成功させ、updated_at を 1500 にする
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 10)
+  let assert Ok(1) =
+    storage.mark_success(conn, claimed.id, 1, 1500, claimed.updated_at)
+  assert claimed.id == "d-e1-d"
+
+  let assert Ok(all) = storage.list_deliveries(conn, None, None, 10)
+  assert list.map(all, fn(d) { d.id }) == ["d-e3-d", "d-e2-d", "d-e1-d"]
+
+  let assert Ok(pending) =
+    storage.list_deliveries(conn, Some(storage.Pending), None, 10)
+  assert list.map(pending, fn(d) { d.id }) == ["d-e3-d", "d-e2-d"]
+
+  let assert Ok(succeeded) =
+    storage.list_deliveries(conn, Some(storage.Succeeded), None, 10)
+  assert list.map(succeeded, fn(d) { d.id }) == ["d-e1-d"]
+
+  let assert Ok(ci) = storage.list_deliveries(conn, None, Some("ci"), 10)
+  assert list.map(ci, fn(d) { d.id }) == ["d-e3-d", "d-e1-d"]
+
+  let assert Ok(both) =
+    storage.list_deliveries(conn, Some(storage.Pending), Some("ci"), 10)
+  assert list.map(both, fn(d) { d.id }) == ["d-e3-d"]
+
+  let assert Ok(limited) = storage.list_deliveries(conn, None, None, 1)
+  assert list.map(limited, fn(d) { d.id }) == ["d-e3-d"]
+}
+
+pub fn get_delivery_found_and_missing_test() {
+  use conn <- with_db
+  accept_at(conn, "g-e1", "github", "push", "ci", 1000)
+  let assert Ok(delivery) = storage.get_delivery(conn, "g-e1-d")
+  assert delivery.event_id == "g-e1"
+  assert delivery.destination == "ci"
+  assert delivery.status == storage.Pending
+  assert delivery.attempts == 0
+  assert delivery.next_attempt_at == 1000
+  let assert Error(_) = storage.get_delivery(conn, "no-such-id")
+}
+
+pub fn list_event_deliveries_scoped_to_event_test() {
+  use conn <- with_db
+  let ev = sample_event("fan-e1")
+  let assert Ok([d1, d2]) =
+    storage.accept(conn, ev, ["ci", "audit"], 1000, ["fan-d1", "fan-d2"])
+  let _ = d2
+  accept_at(conn, "fan-e2", "github", "push", "other", 2000)
+
+  // 1 件を成功させ updated_at を新しくする(どちらが claim されるかは問わない)
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
+  let assert Ok(1) =
+    storage.mark_success(conn, claimed.id, 1, 1500, claimed.updated_at)
+  assert list.contains([d1.id, d2.id], claimed.id)
+
+  let assert Ok(for_e1) = storage.list_event_deliveries(conn, "fan-e1")
+  let assert [first, second] = for_e1
+  assert first.id == claimed.id
+  assert first.status == storage.Succeeded
+  assert list.contains([d1.id, d2.id], second.id)
+  assert second.status == storage.Pending
+
+  // 他 Event の Delivery は混ざらない
+  let assert Ok(for_other) = storage.list_event_deliveries(conn, "fan-e2")
+  assert list.map(for_other, fn(d) { d.destination }) == ["other"]
+}
+
+pub fn counts_by_status_and_oldest_open_test() {
+  use conn <- with_db
+  accept_at(conn, "s-e1", "github", "push", "ci", 1000)
+  accept_at(conn, "s-e2", "github", "push", "ci", 2000)
+  accept_at(conn, "s-e3", "github", "push", "ci", 3000)
+  accept_at(conn, "s-e4", "github", "push", "ci", 4000)
+
+  // e1 → succeeded / e2 → retry_scheduled / e3 → delivering / e4 → pending
+  let assert Ok([c1]) = storage.claim_due(conn, 1000, 1)
+  let assert Ok(1) =
+    storage.mark_success(conn, c1.id, 1, 1500, c1.updated_at)
+  let assert Ok([c2]) = storage.claim_due(conn, 2000, 1)
+  let assert Ok(1) =
+    storage.mark_retry(conn, c2.id, 1, 5000, "timeout", 2100, c2.updated_at)
+  let assert Ok([_c3]) = storage.claim_due(conn, 3000, 1)
+
+  let assert Ok(counts) = storage.counts_by_status(conn)
+  assert list.length(counts) == 4
+  assert list.contains(counts, #(storage.Succeeded, 1))
+  assert list.contains(counts, #(storage.RetryScheduled, 1))
+  assert list.contains(counts, #(storage.Delivering, 1))
+  assert list.contains(counts, #(storage.Pending, 1))
+
+  // pending / retry_scheduled 中最古は e2(updated_at=2100)
+  let assert Ok(Some(2100)) = storage.oldest_open(conn)
+  let assert Ok(snapshot) = storage.status_snapshot(conn)
+  assert snapshot.oldest_open_since_ms == Some(2100)
+  assert list.length(snapshot.counts) == 4
+
+  // 空 DB では counts は空、oldest は None
+  use empty <- with_db
+  let assert Ok([]) = storage.counts_by_status(empty)
+  let assert Ok(None) = storage.oldest_open(empty)
+}
+
+/// read-only クエリがどの行も変更しないこと(参照の実行が副作用を持たない)。
+pub fn read_queries_do_not_mutate_state_test() {
+  use conn <- with_db
+  accept_at(conn, "r-e1", "github", "push", "ci", 1000)
+  accept_at(conn, "r-e2", "github", "push", "audit", 2000)
+  let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
+  let assert Ok(1) =
+    storage.mark_retry(conn, claimed.id, 2, 5000, "boom", 2500, claimed.updated_at)
+
+  // 一通り読む
+  let assert Ok(_) = storage.status_snapshot(conn)
+  let assert Ok(_) = storage.list_events(conn, None, None, 10)
+  let assert Ok(_) = storage.list_event_deliveries(conn, "r-e1")
+  let assert Ok(_) = storage.list_deliveries(conn, None, None, 10)
+  let assert Ok(_) = storage.get_delivery(conn, "r-e1-d")
+  let assert Ok(_) = storage.get_delivery(conn, claimed.id)
+  let assert Ok(_) = storage.oldest_open(conn)
+
+  // どの行も状態・試行回数・時刻が元のまま
+  let assert Ok(retry) = storage.get_delivery(conn, "r-e1-d")
+  assert retry.id == claimed.id
+  assert retry.status == storage.RetryScheduled
+  assert retry.attempts == 2
+  assert retry.updated_at == 2500
+  assert retry.next_attempt_at == 5000
+  let assert Ok(pending) = storage.get_delivery(conn, "r-e2-d")
+  assert pending.status == storage.Pending
+  assert pending.attempts == 0
+  assert pending.updated_at == 2000
+  assert pending.next_attempt_at == 2000
+  let assert Ok(2) = storage.count_pending(conn)
+
+  // 期日通りの claim も変わらず機能する(読取りが claim を消費していない)
+  let assert Ok(due) = storage.claim_due(conn, 5000, 2)
+  assert list.contains(list.map(due, fn(d) { d.id }), claimed.id)
 }

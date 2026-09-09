@@ -42,6 +42,7 @@
 - Storage / Metrics / Dispatcher を static_supervisor(one_for_one, permanent)配下に置き、クラッシュ時に自動再起動する。参照は registry 経由で共有
 - 実行中に滞留した delivering を dispatcher の reaper が定期的に検出して pending に戻す(閾値は実効タイムアウト最大値 ×2、最低 10 秒)
 - `GET /health`、`GET /ready`、構造化 JSON ログ
+- Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`)。SELECT のみで状態を変えず、`--limit` 既定 50・上限 1000。存在しない ID は非 0 終了(#31)
 - オフライン起動（Destination が Internet 上ならその通信のみ必要）
 - HTTPS Destination は httpc TLS。Ingress TLS は reverse proxy 前提
 
@@ -59,7 +60,7 @@
 
 ## 正しく対象外にしているもの
 
-Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、`status` / `events list` / `deliveries list`、Retry-After、ホットリロード、自動 retention、Transform Engine。
+Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、Retry-After、ホットリロード、自動 retention、Transform Engine。
 
 ## 次に埋めるなら
 
