@@ -85,6 +85,9 @@ pub fn parse_valid_config_test() {
     ..,
   )) = config.find_destination(parsed, "audit")
 
+  // 既知キーのみの構成では警告が出ないこと (Task B)
+  assert parsed.warnings == []
+
   let assert Ok(pr) =
     list.find(parsed.routes, fn(route) { route.name == "backend-pr" })
   assert pr.filters
@@ -393,5 +396,289 @@ destinations = [\"ok\"]
     config.parse_with(toml, getenv)
   assert list.any(messages, fn(m) {
     string.contains(m, "route name must not be empty")
+  })
+}
+
+// --- Task A: hmac_header の空・空白 reject ---
+
+pub fn empty_source_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_header = \"\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn blank_source_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_header = \"   \"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn empty_destination_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+hmac_header = \"\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+pub fn blank_destination_hmac_header_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+hmac_header = \"  \"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
+}
+
+// --- Task B: 未知キーは warn のみで失敗しない ---
+
+pub fn unknown_server_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[server]
+host = \"127.0.0.1\"
+bogus_server_key = true
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in [server]")
+    && string.contains(w, "bogus_server_key")
+  })
+}
+
+pub fn unknown_source_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+bogus_source_key = 1
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in source s")
+    && string.contains(w, "bogus_source_key")
+  })
+}
+
+pub fn unknown_destination_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+bogus_dest_key = \"x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in destination ok")
+    && string.contains(w, "bogus_dest_key")
+  })
+}
+
+pub fn unknown_filter_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+[[routes.filters]]
+path = \"a\"
+op = \"eq\"
+value = \"x\"
+bogus_filter_key = true
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in route r filters")
+    && string.contains(w, "bogus_filter_key")
+  })
+}
+
+// --- Task C: sources.path の検証 ---
+
+pub fn source_path_default_is_events_name_test() {
+  let toml =
+    "
+[[sources]]
+name = \"no-path\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  let assert Ok(src) = config.find_source(parsed, "no-path")
+  assert src.path == "/events/no-path"
+}
+
+pub fn source_path_must_start_with_slash_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+path = \"hooks/gh\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "must start with '/'") })
+}
+
+pub fn source_path_must_not_be_root_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+path = \"/\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) { string.contains(m, "must not be '/'") })
+}
+
+pub fn source_path_forbids_query_fragment_whitespace_test() {
+  let bad = fn(path: String) -> Bool {
+    let toml = "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+path = \"" <> path <> "\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) {
+      string.contains(m, "must not contain '?', '#' or whitespace")
+    })
+  }
+  assert bad("/hooks?x=1")
+  assert bad("/hooks#frag")
+  assert bad("/hooks with space")
+}
+
+pub fn duplicate_source_path_is_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"a\"
+type_fixed = \"ping\"
+path = \"/same\"
+[[sources]]
+name = \"b\"
+type_fixed = \"pong\"
+path = \"/same\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "duplicate source path")
+  })
+}
+
+pub fn default_path_colliding_with_custom_path_is_rejected_test() {
+  // b の既定パス /events/b と、a の明示 /events/b が衝突する
+  let toml =
+    "
+[[sources]]
+name = \"b\"
+type_fixed = \"ping\"
+[[sources]]
+name = \"a\"
+type_fixed = \"pong\"
+path = \"/events/b\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "duplicate source path")
+  })
+}
+
+pub fn source_path_must_not_collide_with_reserved_test() {
+  let paths = ["/health", "/ready", "/metrics"]
+  assert list.all(paths, fn(path) {
+    let toml = "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+path = \"" <> path <> "\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) { string.contains(m, "reserved ingress endpoint") })
   })
 }

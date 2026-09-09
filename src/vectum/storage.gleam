@@ -56,6 +56,7 @@ pub type Message {
     id: String,
     attempts: Int,
     now_ms: Int,
+    token: Int,
   )
   MarkRetry(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -64,6 +65,7 @@ pub type Message {
     next_attempt_at: Int,
     error: String,
     now_ms: Int,
+    token: Int,
   )
   MarkDead(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -71,6 +73,7 @@ pub type Message {
     attempts: Int,
     error: String,
     now_ms: Int,
+    token: Int,
   )
   ReapStale(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -82,13 +85,34 @@ pub type Message {
   DeleteDead(reply: Subject(Result(Int, sqlight.Error)), id: String)
   PendingCount(reply: Subject(Result(Int, sqlight.Error)))
   Ping(reply: Subject(Result(Nil, sqlight.Error)))
+  // #31: read-only ops CLI queries. 参照のみで状態を変更しない。
+  ReadStatus(reply: Subject(Result(StatusSnapshot, sqlight.Error)))
+  ListEvents(
+    reply: Subject(Result(List(Event), sqlight.Error)),
+    source: Option(String),
+    event_type: Option(String),
+    limit: Int,
+  )
+  ListEventDeliveries(
+    reply: Subject(Result(List(Delivery), sqlight.Error)),
+    event_id: String,
+  )
+  ListDeliveries(
+    reply: Subject(Result(List(Delivery), sqlight.Error)),
+    status: Option(DeliveryStatus),
+    destination: Option(String),
+    limit: Int,
+  )
+  GetDelivery(reply: Subject(Result(Delivery, sqlight.Error)), id: String)
 }
 
 const schema = "
 pragma foreign_keys = on;
 pragma busy_timeout = 5000;
 pragma journal_mode = wal;
-pragma synchronous = normal;
+-- WAL でも synchronous = full で各コミットを fsync する。
+-- 202 応答はコミット完了後なので、電源断でも受理済み配送は失われない。
+pragma synchronous = full;
 
 create table if not exists events (
   id text primary key,
@@ -290,8 +314,12 @@ pub fn claim_due(
   now_ms: Int,
   limit: Int,
 ) -> Result(List(Delivery), sqlight.Error) {
+  // updated_at が claim 世代 token を兼ねる。reap と claim が同じミリ秒に
+  // 重なっても前値と衝突しないよう、必ず直前の値より大きくする。
+  // RETURNING で返る updated_at がそのまま mark_* の token になる。
   sqlight.query(
-    "update deliveries set status = 'delivering', updated_at = ?
+    "update deliveries
+     set status = 'delivering', updated_at = max(?, updated_at + 1)
      where id in (
        select id from deliveries
        where status in ('pending', 'retry_scheduled')
@@ -308,6 +336,7 @@ pub fn claim_due(
 }
 
 /// delivering の行にだけ効く。戻り値は更新件数。
+/// token は claim 時に返った updated_at(claim 世代)。
 /// reaper に奪取された後の旧ワーカーの遅延完了は 0 件になり、
 /// 呼出側は確定しなかったことを検知できる。
 pub fn mark_success(
@@ -315,10 +344,15 @@ pub fn mark_success(
   id: String,
   attempts: Int,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
-  update_delivery(conn, id, "succeeded", attempts, now_ms, now_ms, None)
+  update_delivery(conn, id, "succeeded", attempts, now_ms, now_ms, None, token)
 }
 
+/// delivering の行にだけ効き、かつ token(claim 時の updated_at)が現在値と
+/// 一致する行にだけ効く。戻り値は更新件数。
+/// reaper に奪取されて新世代が claim した後の旧ワーカーの遅延完了は
+/// 0 件になり、呼出側は確定しなかったことを検知できる。
 pub fn mark_retry(
   conn: sqlight.Connection,
   id: String,
@@ -326,12 +360,13 @@ pub fn mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'retry_scheduled', attempts = ?, next_attempt_at = ?,
          last_attempt_at = ?, last_error = ?, updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -340,6 +375,7 @@ pub fn mark_retry(
       sqlight.text(error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -352,12 +388,13 @@ pub fn mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'dead_letter', attempts = ?, last_attempt_at = ?,
          last_error = ?, updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -365,6 +402,7 @@ pub fn mark_dead(
       sqlight.text(error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -379,14 +417,16 @@ fn update_delivery(
   last_attempt_at: Int,
   now_ms: Int,
   error: Option(String),
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
-  // mark_* は delivering の間だけ有効。reaper 後の旧ワーカーの遅延完了が、
-  // 新しい claim の結果を上書きしないようにする。
+  // mark_* は delivering の間だけ有効。さらに claim 世代 token(claim 時に
+  // 返った updated_at)が現在値と一致する行にだけ効く。reaper 後に新世代が
+  // claim した行を、旧ワーカーの遅延完了が上書きできない(F2)。
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = ?, attempts = ?, last_attempt_at = ?, last_error = ?,
          updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.text(status),
@@ -395,6 +435,7 @@ fn update_delivery(
       sqlight.nullable(sqlight.text, error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -403,6 +444,8 @@ fn update_delivery(
 
 /// updated_at が cutoff_ms より前の delivering を pending に戻し、
 /// 戻した件数を返す。
+/// 戻した行の updated_at は now_ms に置き換わるため、旧 claim の token は
+/// 失効し、旧ワーカーの mark_* は以後 0 件になる(F2)。
 pub fn reap_stale_delivering(
   conn: sqlight.Connection,
   cutoff_ms: Int,
@@ -625,9 +668,10 @@ pub fn call_mark_success(
   id: String,
   attempts: Int,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkSuccess(reply:, id:, attempts:, now_ms:)
+    MarkSuccess(reply:, id:, attempts:, now_ms:, token:)
   })
 }
 
@@ -638,9 +682,10 @@ pub fn call_mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:)
+    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:, token:)
   })
 }
 
@@ -650,9 +695,10 @@ pub fn call_mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkDead(reply:, id:, attempts:, error:, now_ms:)
+    MarkDead(reply:, id:, attempts:, error:, now_ms:, token:)
   })
 }
 
@@ -706,15 +752,15 @@ fn handle(
     GetEvent(reply:, id:) -> process.send(reply, get_event(conn, id))
     ClaimDue(reply:, now_ms:, limit:) ->
       process.send(reply, claim_due(conn, now_ms, limit))
-    MarkSuccess(reply:, id:, attempts:, now_ms:) ->
-      process.send(reply, mark_success(conn, id, attempts, now_ms))
-    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:) ->
+    MarkSuccess(reply:, id:, attempts:, now_ms:, token:) ->
+      process.send(reply, mark_success(conn, id, attempts, now_ms, token))
+    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:, token:) ->
       process.send(
         reply,
-        mark_retry(conn, id, attempts, next_attempt_at, error, now_ms),
+        mark_retry(conn, id, attempts, next_attempt_at, error, now_ms, token),
       )
-    MarkDead(reply:, id:, attempts:, error:, now_ms:) ->
-      process.send(reply, mark_dead(conn, id, attempts, error, now_ms))
+    MarkDead(reply:, id:, attempts:, error:, now_ms:, token:) ->
+      process.send(reply, mark_dead(conn, id, attempts, error, now_ms, token))
     ReapStale(reply:, cutoff_ms:, now_ms:) ->
       process.send(reply, reap_stale_delivering(conn, cutoff_ms, now_ms))
     ListDead(reply:) -> process.send(reply, list_dead(conn))
@@ -723,6 +769,14 @@ fn handle(
     DeleteDead(reply:, id:) -> process.send(reply, delete_dead(conn, id))
     PendingCount(reply:) -> process.send(reply, count_pending(conn))
     Ping(reply:) -> process.send(reply, ping(conn))
+    ReadStatus(reply:) -> process.send(reply, status_snapshot(conn))
+    ListEvents(reply:, source:, event_type:, limit:) ->
+      process.send(reply, list_events(conn, source, event_type, limit))
+    ListEventDeliveries(reply:, event_id:) ->
+      process.send(reply, list_event_deliveries(conn, event_id))
+    ListDeliveries(reply:, status:, destination:, limit:) ->
+      process.send(reply, list_deliveries(conn, status, destination, limit))
+    GetDelivery(reply:, id:) -> process.send(reply, get_delivery(conn, id))
   }
   actor.continue(conn)
 }
@@ -804,4 +858,207 @@ fn parse_status(raw: String) -> DeliveryStatus {
     "dead_letter" -> DeadLetter
     _ -> Pending
   }
+}
+
+/// --- #31: read-only ops CLI 用クエリ（追加分のみ。参照で状態を変えない） ---
+/// DeliveryStatus の DB 表記。読み出しフィルタと表示に使う。
+pub fn status_name(status: DeliveryStatus) -> String {
+  case status {
+    Pending -> "pending"
+    Delivering -> "delivering"
+    RetryScheduled -> "retry_scheduled"
+    Succeeded -> "succeeded"
+    DeadLetter -> "dead_letter"
+  }
+}
+
+pub type StatusSnapshot {
+  StatusSnapshot(
+    counts: List(#(DeliveryStatus, Int)),
+    oldest_open_since_ms: Option(Int),
+  )
+}
+
+/// `vectum status` 用の 1 回のスナップショット。
+/// pending / retry_scheduled の中で updated_at が最も古い行の時刻も返す。
+pub fn status_snapshot(
+  conn: sqlight.Connection,
+) -> Result(StatusSnapshot, sqlight.Error) {
+  use counts <- result.try(counts_by_status(conn))
+  use oldest <- result.try(oldest_open(conn))
+  Ok(StatusSnapshot(counts:, oldest_open_since_ms: oldest))
+}
+
+pub fn counts_by_status(
+  conn: sqlight.Connection,
+) -> Result(List(#(DeliveryStatus, Int)), sqlight.Error) {
+  sqlight.query(
+    "select status, count(*) from deliveries group by status",
+    on: conn,
+    with: [],
+    expecting: {
+      use raw <- decode.field(0, decode.string)
+      use count <- decode.field(1, decode.int)
+      decode.success(#(parse_status(raw), count))
+    },
+  )
+}
+
+/// 存在しなければ None。min(updated_at) は idx_deliveries_due(status, ...) の
+/// status プリフィックスで済むため安価。
+pub fn oldest_open(
+  conn: sqlight.Connection,
+) -> Result(Option(Int), sqlight.Error) {
+  use rows <- result.try(
+    sqlight.query(
+      "select min(updated_at) from deliveries
+       where status in ('pending', 'retry_scheduled')",
+      on: conn,
+      with: [],
+      expecting: {
+        use ms <- decode.field(0, decode.optional(decode.int))
+        decode.success(ms)
+      },
+    ),
+  )
+  case rows {
+    [oldest] -> Ok(oldest)
+    _ -> Ok(None)
+  }
+}
+
+/// received_at の新しい順。絞り込みは SQL NULL で無効化する
+/// (`? is null or source = ?`)。
+pub fn list_events(
+  conn: sqlight.Connection,
+  source: Option(String),
+  event_type: Option(String),
+  limit: Int,
+) -> Result(List(Event), sqlight.Error) {
+  sqlight.query(
+    "select id, source, event_type, timestamp, payload, metadata
+     from events
+     where (? is null or source = ?)
+       and (? is null or event_type = ?)
+     order by received_at desc
+     limit ?",
+    on: conn,
+    with: [
+      sqlight.nullable(sqlight.text, source),
+      sqlight.nullable(sqlight.text, source),
+      sqlight.nullable(sqlight.text, event_type),
+      sqlight.nullable(sqlight.text, event_type),
+      sqlight.int(limit),
+    ],
+    expecting: event_row_decoder(),
+  )
+}
+
+/// 1 Event に紐づく全 Delivery(updated_at の新しい順)。
+/// (event_id, destination) の unique index で絞るため LIMIT 不要。
+pub fn list_event_deliveries(
+  conn: sqlight.Connection,
+  event_id: String,
+) -> Result(List(Delivery), sqlight.Error) {
+  sqlight.query(
+    "select id, event_id, destination, status, attempts, next_attempt_at,
+            last_attempt_at, last_error, created_at, updated_at
+     from deliveries
+     where event_id = ?
+     order by updated_at desc",
+    on: conn,
+    with: [sqlight.text(event_id)],
+    expecting: delivery_decoder(),
+  )
+}
+
+pub fn list_deliveries(
+  conn: sqlight.Connection,
+  status: Option(DeliveryStatus),
+  destination: Option(String),
+  limit: Int,
+) -> Result(List(Delivery), sqlight.Error) {
+  let status_text = option.map(status, status_name)
+  sqlight.query(
+    "select id, event_id, destination, status, attempts, next_attempt_at,
+            last_attempt_at, last_error, created_at, updated_at
+     from deliveries
+     where (? is null or status = ?)
+       and (? is null or destination = ?)
+     order by updated_at desc
+     limit ?",
+    on: conn,
+    with: [
+      sqlight.nullable(sqlight.text, status_text),
+      sqlight.nullable(sqlight.text, status_text),
+      sqlight.nullable(sqlight.text, destination),
+      sqlight.nullable(sqlight.text, destination),
+      sqlight.int(limit),
+    ],
+    expecting: delivery_decoder(),
+  )
+}
+
+/// 存在しない ID は Notfound の Error(get_event と同じ流儀)。
+pub fn get_delivery(
+  conn: sqlight.Connection,
+  id: String,
+) -> Result(Delivery, sqlight.Error) {
+  use rows <- result.try(sqlight.query(
+    "select id, event_id, destination, status, attempts, next_attempt_at,
+              last_attempt_at, last_error, created_at, updated_at
+       from deliveries
+       where id = ?",
+    on: conn,
+    with: [sqlight.text(id)],
+    expecting: delivery_decoder(),
+  ))
+  case rows {
+    [delivery] -> Ok(delivery)
+    _ -> Error(sqlight.SqlightError(sqlight.Notfound, "delivery not found", -1))
+  }
+}
+
+pub fn call_status_snapshot(
+  store: Store,
+) -> Result(StatusSnapshot, sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) { ReadStatus(reply:) })
+}
+
+pub fn call_list_events(
+  store: Store,
+  source: Option(String),
+  event_type: Option(String),
+  limit: Int,
+) -> Result(List(Event), sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) {
+    ListEvents(reply:, source:, event_type:, limit:)
+  })
+}
+
+pub fn call_list_event_deliveries(
+  store: Store,
+  event_id: String,
+) -> Result(List(Delivery), sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) {
+    ListEventDeliveries(reply:, event_id:)
+  })
+}
+
+pub fn call_list_deliveries(
+  store: Store,
+  status: Option(DeliveryStatus),
+  destination: Option(String),
+  limit: Int,
+) -> Result(List(Delivery), sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) {
+    ListDeliveries(reply:, status:, destination:, limit:)
+  })
+}
+
+pub fn call_get_delivery(
+  store: Store,
+  id: String,
+) -> Result(Delivery, sqlight.Error) {
+  try_call(store.subject, 5000, fn(reply) { GetDelivery(reply:, id:) })
 }

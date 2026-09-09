@@ -8,16 +8,27 @@
 {"level":"info","msg":"event_accepted","event_id":"...","source":"github","event_type":"push"}
 ```
 
-主なメッセージ:
+時刻は `time` キーに RFC 3339 形式で出力する。
 
-- `listening`
-- `event_accepted`
-- `event_rejected`
-- `persist_failed`
-- `delivery_success`
-- `delivery_retry`
-- `delivery_failed`
-- `delivery_dead`
+主なメッセージ (いずれも `msg` フィールドの値):
+
+- `listening` — HTTP の listen を開始
+- `event_accepted` — イベント受理(永続化後)
+- `event_rejected` — イベント拒否(受理前)
+- `persist_failed` — イベントの永続化失敗
+- `delivery_worker_panic` — 配送ワーカーが panic(枠は解放される)
+- `delivery_claim_failed` — claim_due の取得失敗
+- `delivery_success` — 配送成功
+- `delivery_retry` — retry スケジュール
+- `delivery_failed` — 配送失敗(リトライ予定)
+- `delivery_dead` — dead letter 移行
+- `delivery_persist_failed` — 配送結果の永続化失敗
+- `delivery_stale` — stale(古い)delivering 行を検知し mark を無視
+- `delivery_reaped` — 滞留 delivering を pending に戻した(reaper)
+- `reap_failed` — reaper の再開処理が失敗
+- `invalid_shutdown_grace` — `VECTUM_SHUTDOWN_GRACE_MS` が不正
+- `shutdown_started` — graceful shutdown 開始
+- `shutdown_complete` — graceful shutdown 完了
 
 ## メトリクス
 

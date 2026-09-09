@@ -2,8 +2,10 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{type Option}
 import gleam/string
 import mist
+import sqlight
 import vectum/cli
 import vectum/clock
 import vectum/config.{ConfigError}
@@ -28,12 +30,20 @@ pub fn run_command(arguments: List(String)) -> Nil {
     cli.DeadList(path) -> dead_list(path)
     cli.DeadRetry(path, id) -> dead_retry(path, id)
     cli.DeadDelete(path, id) -> dead_delete(path, id)
+    cli.Status(path) -> ops_status(path)
+    cli.EventsList(path, source, event_type, limit) ->
+      ops_events_list(path, source, event_type, limit)
+    cli.EventsShow(path, id) -> ops_events_show(path, id)
+    cli.DeliveriesList(path, status, destination, limit) ->
+      ops_deliveries_list(path, status, destination, limit)
+    cli.DeliveriesShow(path, id) -> ops_deliveries_show(path, id)
   }
 }
 
 pub fn validate(path: String) -> Nil {
   case config.load(path) {
     Ok(parsed) -> {
+      print_warnings(parsed)
       io.println(
         "ok: "
         <> path
@@ -55,6 +65,7 @@ pub fn validate(path: String) -> Nil {
 
 pub fn run_server(path: String) -> Nil {
   let parsed = require_config(path)
+  print_warnings(parsed)
   shutdown.init()
   // listen 前にハンドラを入れる。起動直後の SIGTERM も graceful に扱う
   shutdown.install_handler(shutdown.run_shutdown_sequence)
@@ -124,15 +135,88 @@ fn dead_delete(path: String, id: String) -> Nil {
   }
 }
 
-/// dead-letter 系は `[storage] path` のみ読む。secret 検証エラー時も操作できる。
+/// dead-letter / read-only 運用系は `[storage] path` のみ読む。secret 検証エラー時も操作できる。
 fn require_dead_store(path: String) -> storage.Store {
+  require_store(ops_storage_path(path))
+}
+
+/// 運用系コマンドの storage path 解決。失敗時は設定エラーを出して終了する。
+fn ops_storage_path(path: String) -> String {
   case config.load_storage_path(path) {
-    Ok(storage_path) -> require_store(storage_path)
+    Ok(storage_path) -> storage_path
     Error(ConfigError(messages)) -> {
       print_errors(path, messages)
       env.halt(1)
       panic as "unreachable"
     }
+  }
+}
+
+fn ops_status(path: String) -> Nil {
+  let storage_path = ops_storage_path(path)
+  let store = require_store(storage_path)
+  case storage.call_status_snapshot(store) {
+    Ok(snapshot) ->
+      io.println(cli.format_status(storage_path, snapshot, clock.now_ms()))
+    Error(error) -> fail("failed to read status: " <> string.inspect(error))
+  }
+}
+
+fn ops_events_list(
+  path: String,
+  source: Option(String),
+  event_type: Option(String),
+  limit: Int,
+) -> Nil {
+  let store = require_dead_store(path)
+  case storage.call_list_events(store, source, event_type, limit) {
+    Ok(events) -> io.println(cli.format_events(events))
+    Error(error) -> fail("failed to list events: " <> string.inspect(error))
+  }
+}
+
+fn ops_events_show(path: String, id: String) -> Nil {
+  let store = require_dead_store(path)
+  case storage.call_get_event(store, id) {
+    Ok(event) ->
+      case storage.call_list_event_deliveries(store, id) {
+        Ok(deliveries) -> io.println(cli.format_event_show(event, deliveries))
+        Error(error) ->
+          fail(
+            "failed to load deliveries for event "
+            <> id
+            <> ": "
+            <> string.inspect(error),
+          )
+      }
+    Error(sqlight.SqlightError(sqlight.Notfound, _, _)) ->
+      fail("no event with id " <> id)
+    Error(error) ->
+      fail("failed to load event " <> id <> ": " <> string.inspect(error))
+  }
+}
+
+fn ops_deliveries_list(
+  path: String,
+  status: Option(storage.DeliveryStatus),
+  destination: Option(String),
+  limit: Int,
+) -> Nil {
+  let store = require_dead_store(path)
+  case storage.call_list_deliveries(store, status, destination, limit) {
+    Ok(deliveries) -> io.println(cli.format_deliveries(deliveries))
+    Error(error) -> fail("failed to list deliveries: " <> string.inspect(error))
+  }
+}
+
+fn ops_deliveries_show(path: String, id: String) -> Nil {
+  let store = require_dead_store(path)
+  case storage.call_get_delivery(store, id) {
+    Ok(delivery) -> io.println(cli.format_deliveries([delivery]))
+    Error(sqlight.SqlightError(sqlight.Notfound, _, _)) ->
+      fail("no delivery with id " <> id)
+    Error(error) ->
+      fail("failed to load delivery " <> id <> ": " <> string.inspect(error))
   }
 }
 
@@ -157,6 +241,12 @@ fn require_store(path: String) -> storage.Store {
 fn print_errors(path: String, messages: List(String)) -> Nil {
   io.println_error("invalid config: " <> path)
   list.each(messages, fn(message) { io.println_error("- " <> message) })
+}
+
+fn print_warnings(parsed: config.Config) -> Nil {
+  list.each(parsed.warnings, fn(warning) {
+    io.println_error("warning: " <> warning)
+  })
 }
 
 fn fail(message: String) -> a {

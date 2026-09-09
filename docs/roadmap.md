@@ -3,6 +3,7 @@
 ## v0.1（実装済みの範囲）
 
 - HTTP Ingress
+- Custom receive path via `sources.path`(#39)
 - HTTP Destination
 - Routing
 - Filtering
@@ -12,6 +13,7 @@
 - SQLite
 - HMAC
 - CLI
+- Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`、#31)
 - Metrics
 
 充足の細部は [spec-compliance.md](./spec-compliance.md)。
@@ -24,7 +26,6 @@
 - より詳しい CLI 参照
 - Event transformation
 - Configuration hot reload
-- `sources.path` によるカスタム受信パス(v0.1 は URL を `/events/<name>` 固定。設定キーは将来用に解析のみ維持)
 
 ## v0.3 候補
 
@@ -53,7 +54,6 @@ map."orderNo" = "order_id"
 - MQTT / NATS / SQS / Kafka / WebSocket
 - クラスタ
 - exactly-once
-- `status` / `events list` / `deliveries list`
 - Retry-After
 - ホットリロード
 - 自動 retention

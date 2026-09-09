@@ -73,6 +73,11 @@ vectum validate --config router.toml
 vectum dead list --config router.toml
 vectum dead retry <delivery-id> --config router.toml
 vectum dead delete <delivery-id> --config router.toml
+vectum status --config router.toml
+vectum events list [--source S] [--type T] [--limit N] --config router.toml
+vectum events show <event-id> --config router.toml
+vectum deliveries list [--status S] [--destination D] [--limit N] --config router.toml
+vectum deliveries show <delivery-id> --config router.toml
 ```
 
 開発中は `gleam run --` のあとに同じサブコマンドを渡せます。
@@ -119,9 +124,7 @@ jitter = true
 
 起動時に設定全体を検証し、不正があればプロセスを終了します。
 
-> Source の `path` キーは現在未使用です。受信 URL は常に `/events/<name>` 固定です(将来のカスタムパス対応に備えた記録用キー)。
-
-> Source の `path` キーは現在未使用です。受信 URL は常に `/events/<name>` 固定です(将来のカスタムパス対応に備えた記録用キー)。
+> Source の `path` で受信パスを指定できます(未指定時は `/events/<name>`)。
 
 ## HTTP API
 
@@ -168,9 +171,11 @@ gleam build
 ```sh
 docker build -t vectum:0.1.0 .
 docker run --rm -p 8080:8080 \
-  -v ./data:/data \
+  -v vectum-data:/data \
   vectum:0.1.0
 ```
+
+イメージは非 root の uid 10001 (`vectum` ユーザー) で起動するため、ホストディレクトリの bind mount (`-v ./data:/data`) は所有権が合わず書き込みに失敗することがあります。`-v vectum-data:/data` のような名前付きボリュームを使うか、bind mount を使う場合は所有権を揃えてください(`chown 10001` するか `--user` で起動)。
 
 設定を上書きする場合:
 
@@ -178,7 +183,7 @@ docker run --rm -p 8080:8080 \
 docker run --rm -p 8080:8080 \
   -e VECTUM_CONFIG=/config/router.toml \
   -v ./router.toml:/config/router.toml:ro \
-  -v ./data:/data \
+  -v vectum-data:/data \
   vectum:0.1.0
 ```
 

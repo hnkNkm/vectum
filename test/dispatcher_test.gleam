@@ -24,6 +24,7 @@ fn base(timeout_ms: Int, destinations: List(config.Destination)) -> Config {
     routes: [],
     delivery: Policy(8, 1000, 60_000, timeout_ms, False),
     concurrency: 8,
+    warnings: [],
   )
 }
 
@@ -121,17 +122,21 @@ pub fn tick_claims_only_free_capacity_test() {
       "cap-4",
     ])
 
-  // 1 回目: 空き枠 2 だけ claim し、同時に枠を予約する
+  // 1 回目: 空き枠 2 だけ claim する。枠予約は spawn されたワーカー自身が
+  // 先頭で行う(F5)ため、予約の確定を待ってから続きを確認する
   let assert Ok(2) = dispatcher.tick(parsed, store, m, slow_send)
+  wait_until(fn() { shutdown.active_workers() == baseline + 2 }, 2000)
   assert shutdown.active_workers() == baseline + 2
 
   // 2 回目: 空き枠ゼロなので claim しない(ワーカーは増殖しない)
   let assert Ok(0) = dispatcher.tick(parsed, store, m, slow_send)
   assert shutdown.active_workers() == baseline + 2
 
-  // 完了を待つと枠が解放され、残りが処理できる
+  // 完了を待つと枠が解放され、残りが処理できる。
+  // 予約はワーカー自身が行うため、解放待ちの前に枠の確保(+2)を待つ
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
   let assert Ok(2) = dispatcher.tick(parsed, store, m, slow_send)
+  wait_until(fn() { shutdown.active_workers() == baseline + 2 }, 3000)
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
   let assert Ok(0) = storage.call_pending_count(store)
 }
@@ -146,7 +151,6 @@ fn wait_until(cond: fn() -> Bool, timeout_ms: Int) -> Nil {
   }
 }
 
-/// ワーカーが panic しても枠は解放され、次 tick で claimできること(#26)。
 /// ワーカーが panic しても枠は解放され、以降も claim を続けられること(#26)。
 pub fn panicked_worker_releases_slot_test() {
   let baseline = shutdown.active_workers()
@@ -167,11 +171,11 @@ pub fn panicked_worker_releases_slot_test() {
       "panic-1", "panic-2", "panic-3",
     ])
 
-  // send が panic するワーカーでも枠を解放する(guarded 実行)
+  // send が panic するワーカーでも枠を解放する(guarded 実行)。
+  // panic は即時なので +2 の瞬間は観測できない。枠が漏れた場合は
+  // 直後の claim が 0 件になるか、最後まで baseline に戻らず assert が失敗する
   let assert Ok(2) =
     dispatcher.tick(parsed, store, m, fn(_outgoing) { panic as "boom" })
-  assert shutdown.active_workers() == baseline + 2
-  wait_until(fn() { shutdown.active_workers() == baseline }, 2000)
 
   // 枠が戻っているため、残り 1 件を通常どおり処理できる
   let assert Ok(1) =
@@ -185,6 +189,7 @@ pub fn panicked_worker_releases_slot_test() {
     },
     3000,
   )
+  wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
   assert shutdown.active_workers() == baseline
 }
 
@@ -234,6 +239,8 @@ pub fn dispatcher_death_does_not_leak_slots_test() {
     ])
   let assert Ok(1) =
     dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(200) })
+  // 予約はワーカー自身が行うため、解放待ちの前に枠の確保(+1)を待つ
+  wait_until(fn() { shutdown.active_workers() == baseline + 1 }, 3000)
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
   let assert Ok(0) = storage.call_pending_count(store)
 }
@@ -251,8 +258,20 @@ pub fn failed_send_releases_slot_test() {
 
   let assert Ok(1) =
     dispatcher.tick(parsed, store, m, fn(_outgoing) { delivery.Status(500) })
-  assert shutdown.active_workers() == baseline + 1
+
+  // retry 計上(mark_retry 完了)を確認し、その後に枠解放を待つ。
+  // 解放されなければ baseline に戻らず最終 assert が失敗する
+  wait_until(
+    fn() {
+      case metrics.snapshot(m) {
+        Ok(snap) -> snap.deliveries_retry == 1
+        Error(_) -> False
+      }
+    },
+    3000,
+  )
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
+  assert shutdown.active_workers() == baseline
 
   // retry 予定として残り、未到来のためすぐには再 claim されない
   let assert Ok(1) = storage.call_pending_count(store)
@@ -293,6 +312,8 @@ pub fn storage_outage_tick_fails_safe_and_resumes_test() {
     ])
   let assert Ok(1) =
     dispatcher.tick(parsed, recovered, m, fn(_outgoing) { delivery.Status(200) })
+  // 予約はワーカー自身が行うため、解放待ちの前に枠の確保(+1)を待つ
+  wait_until(fn() { shutdown.active_workers() == baseline + 1 }, 3000)
   wait_until(fn() { shutdown.active_workers() == baseline }, 3000)
   let assert Ok(0) = storage.call_pending_count(recovered)
 }
