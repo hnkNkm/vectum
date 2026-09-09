@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -21,6 +22,8 @@ pub type Config {
     routes: List(Route),
     delivery: Policy,
     concurrency: Int,
+    /// 未知キーなど失敗させない非致命的な検出内容。validate / run 時に stderr へ出す。
+    warnings: List(String),
   )
 }
 
@@ -181,9 +184,10 @@ fn decode_config(
           routes:,
           delivery: policy,
           concurrency:,
+          warnings: [],
         )
       case validate(config) {
-        [] -> Ok(config)
+        [] -> Ok(Config(..config, warnings: collect_warnings(doc)))
         messages -> Error(ConfigError(messages))
       }
     }
@@ -782,4 +786,153 @@ fn map_collect(
 
 fn key_label(key: List(String)) -> String {
   string.join(key, ".")
+}
+
+// ---------------------------------------------------------------------------
+// 未知キー警告
+// 未知キーは失敗させず、Config.warnings に載せて stderr へ出すだけ。
+// ---------------------------------------------------------------------------
+
+const server_keys = ["host", "port", "max_body_bytes"]
+
+const storage_keys = ["path"]
+
+const delivery_keys = [
+  "max_attempts",
+  "initial_backoff_ms",
+  "max_backoff_ms",
+  "timeout_ms",
+  "jitter",
+  "concurrency",
+]
+
+const source_keys = [
+  "name",
+  "path",
+  "type_from_header",
+  "type_from_json",
+  "type_fixed",
+  "hmac_header",
+  "hmac_secret",
+  "hmac_secret_env",
+]
+
+const destination_keys = [
+  "name",
+  "type",
+  "url",
+  "timeout_ms",
+  "hmac_header",
+  "hmac_secret",
+  "hmac_secret_env",
+]
+
+const route_keys = ["name", "source", "event", "destinations", "filters"]
+
+const filter_keys = ["path", "op", "value"]
+
+/// 失敗させない未知キー検出。構造が想定と異なれば decode 側が別途エラーにするため、
+/// ここでは未知キーの報告のみ行い、常に非破壊で返す。
+fn collect_warnings(doc: Dict(String, Toml)) -> List(String) {
+  list.flatten([
+    warn_table_keys(doc, "server", server_keys),
+    warn_table_keys(doc, "storage", storage_keys),
+    warn_table_keys(doc, "delivery", delivery_keys),
+    warn_row_keys(doc, "sources", source_keys, "source"),
+    warn_row_keys(doc, "destinations", destination_keys, "destination"),
+    warn_route_tables(doc),
+  ])
+}
+
+/// 単一 `[section]` テーブルの未知キー。
+fn warn_table_keys(
+  doc: Dict(String, Toml),
+  section: String,
+  allowed: List(String),
+) -> List(String) {
+  case dict.get(doc, section) {
+    Ok(tom.Table(inner)) | Ok(tom.InlineTable(inner)) ->
+      unknown_key_messages(dict.keys(inner), allowed, "[" <> section <> "]")
+    _ -> []
+  }
+}
+
+/// `[[section]]` の各テーブルの未知キー。
+fn warn_row_keys(
+  doc: Dict(String, Toml),
+  section: String,
+  allowed: List(String),
+  kind: String,
+) -> List(String) {
+  collect_row_tables(doc, section)
+  |> list.index_map(with: fn(row, index) {
+    let subject = case dict.get(row, "name") {
+      Ok(tom.String(name)) -> kind <> " " <> name
+      _ -> section <> "[" <> int.to_string(index + 1) <> "]"
+    }
+    unknown_key_messages(dict.keys(row), allowed, subject)
+  })
+  |> list.flatten
+}
+
+/// routes は row 本体に加え、各 row の `filters` テーブル群の未知キーも報告する。
+fn warn_route_tables(doc: Dict(String, Toml)) -> List(String) {
+  collect_row_tables(doc, "routes")
+  |> list.index_map(with: fn(row, index) {
+    let subject = case dict.get(row, "name") {
+      Ok(tom.String(name)) -> "route " <> name
+      _ -> "routes[" <> int.to_string(index + 1) <> "]"
+    }
+    let own = unknown_key_messages(dict.keys(row), route_keys, subject)
+    let filter_msgs =
+      case dict.get(row, "filters") {
+        Ok(tom.ArrayOfTables(tables)) -> tables
+        Ok(tom.Array(items)) ->
+          list.filter_map(items, fn(item) {
+            case item {
+              tom.Table(table) | tom.InlineTable(table) -> Ok(table)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> []
+      }
+      |> list.index_map(with: fn(filter_table, f_index) {
+        unknown_key_messages(
+          dict.keys(filter_table),
+          filter_keys,
+          subject <> " filters[" <> int.to_string(f_index + 1) <> "]",
+        )
+      })
+      |> list.flatten
+    list.append(own, filter_msgs)
+  })
+  |> list.flatten
+}
+
+/// `[[section]]` 相当のテーブル一覧を、構造が違えば空で返す (非破壊)。
+fn collect_row_tables(
+  doc: Dict(String, Toml),
+  section: String,
+) -> List(Dict(String, Toml)) {
+  case dict.get(doc, section) {
+    Ok(tom.ArrayOfTables(tables)) -> tables
+    Ok(tom.Array(items)) ->
+      list.filter_map(items, fn(item) {
+        case item {
+          tom.Table(table) | tom.InlineTable(table) -> Ok(table)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> []
+  }
+}
+
+fn unknown_key_messages(
+  keys: List(String),
+  allowed: List(String),
+  subject: String,
+) -> List(String) {
+  keys
+  |> list.filter(fn(key) { !list.contains(allowed, key) })
+  |> list.map(fn(key) { "unknown config key in " <> subject <> ": " <> key })
 }

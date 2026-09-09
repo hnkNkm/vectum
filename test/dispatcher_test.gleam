@@ -24,6 +24,7 @@ fn base(timeout_ms: Int, destinations: List(config.Destination)) -> Config {
     routes: [],
     delivery: Policy(8, 1000, 60_000, timeout_ms, False),
     concurrency: 8,
+    warnings: [],
   )
 }
 

@@ -461,3 +461,93 @@ hmac_header = \"  \"
     config.parse_with(toml, getenv)
   assert list.any(messages, fn(m) { string.contains(m, "hmac_header") })
 }
+
+// --- Task B: 未知キーは warn のみで失敗しない ---
+
+pub fn known_config_has_no_warnings_test() {
+  let assert Ok(parsed) = config.parse_with(valid, getenv)
+  assert parsed.warnings == []
+}
+
+pub fn unknown_server_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[server]
+host = \"127.0.0.1\"
+bogus_server_key = true
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in [server]")
+    && string.contains(w, "bogus_server_key")
+  })
+}
+
+pub fn unknown_source_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+bogus_source_key = 1
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in source s")
+    && string.contains(w, "bogus_source_key")
+  })
+}
+
+pub fn unknown_destination_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+bogus_dest_key = \"x\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in destination ok")
+    && string.contains(w, "bogus_dest_key")
+  })
+}
+
+pub fn unknown_filter_key_is_warned_not_rejected_test() {
+  let toml =
+    "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+[[routes]]
+name = \"r\"
+source = \"s\"
+event = \"ping\"
+destinations = [\"ok\"]
+[[routes.filters]]
+path = \"a\"
+op = \"eq\"
+value = \"x\"
+bogus_filter_key = true
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in route r filters")
+    && string.contains(w, "bogus_filter_key")
+  })
+}
