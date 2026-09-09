@@ -49,6 +49,30 @@ jitter = true
 concurrency = 8
 ```
 
+`[[routes]]` のフィルタ条件には、従来の AND 専用 `[[routes.filters]]` のほか、
+AND / OR をネストできる `[routes.condition]` を 1 つ書ける。両方は併設できない。
+
+```toml
+[[routes]]
+name = "critical-or-emergency"
+source = "github"
+event = "push"
+destinations = ["pager"]
+
+[routes.condition]
+op = "any"
+filters = [
+  { op = "all", filters = [
+    { path = "severity", op = "eq", value = "critical" },
+    { path = "region", op = "eq", value = "jp" },
+  ] },
+  { path = "source", op = "eq", value = "emergency" },
+]
+```
+
+group ノードは `op`(`all` / `any`)と `filters`(leaf または group の配列)を持つ。
+構文・制約(ネスト最大 4 段、空 group 禁止など)の詳細は [routing.md](./routing.md)。
+
 ログは常に構造化 JSON を標準出力へ出す。`[log]` セクションは未実装。
 
 ## 起動時検証
@@ -57,6 +81,10 @@ concurrency = 8
 - `sources.path` が `/` で始まり `/` 単独でなく、`?` `#` 空白を含まないこと
 - Route が未知の Source または Destination を参照していないこと
 - 未知のフィルタ演算子がないこと
+- Route が `filters` と `condition` を併設していないこと
+- condition の group `op` が `all` / `any` であること、group が空でないこと、
+  ネストが 4 段以内であること、leaf の `value` が `exists` / `not_exists`
+  以外では必須であること
 - Destination URL が http(s) であること
 - timeout / retry が正の値であること
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）

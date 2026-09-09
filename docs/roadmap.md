@@ -7,6 +7,7 @@
 - HTTP Destination
 - Routing
 - Filtering
+- Grouped OR/AND routing condition(`[routes.condition]`、#36)
 - Fan-out
 - Retry
 - Retry-After(#37)

@@ -2,10 +2,11 @@ import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
 import vectum/event.{type Event}
-import vectum/filter.{type Filter}
+import vectum/filter.{type Condition, type Filter}
 
 pub type Route {
   Route(
@@ -13,7 +14,10 @@ pub type Route {
     source: String,
     event: String,
     destinations: List(String),
+    /// legacy: `[[routes.filters]]`。`condition` とは排他(AND のみ)。
     filters: List(Filter),
+    /// `[routes.condition]`(#36)。設定時は `filters` の代わりに評価される。
+    condition: Option(Condition),
   )
 }
 
@@ -32,9 +36,17 @@ pub fn matching_routes(routes: List(Route), event: Event) -> List(Route) {
 pub fn matches_route(route: Route, event: Event) -> Bool {
   route.source == event.source
   && event_type_matches(route.event, event.event_type)
-  && list.all(route.filters, fn(filter) {
-    filter.matches_value(filter, lookup_value(event, filter))
-  })
+  && case route.condition {
+    // legacy: filters はすべて AND。
+    None ->
+      list.all(route.filters, fn(filter) {
+        filter.matches_value(filter, lookup_value(event, filter))
+      })
+    Some(condition) ->
+      filter.matches_condition(condition, fn(filter) {
+        lookup_value(event, filter)
+      })
+  }
 }
 
 /// フィルタパスの解決。`metadata.` プレフィックスで Event Metadata を、
