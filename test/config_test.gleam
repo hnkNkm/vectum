@@ -1099,6 +1099,7 @@ auth_bearer = \"dst-inline\"
   let assert Ok(src) = config.find_source(parsed, "tok")
   assert src.bearer_token == Some("src-token")
 }
+
 // --- #30: [retention] ---
 
 /// source / destination が揃った最小 TOML の雛形。body に設定を足す。

@@ -18,7 +18,7 @@ POST /events/:source
 | --- | --- |
 | 未知の Source / 受信パス | `404` |
 | Event Type 不明、JSON 不正 | `400` |
-| HMAC 検証失敗 | `401` |
+| HMAC / Bearer 検証失敗 | `401` |
 | Payload 上限超過 | `413` |
 | `Content-Type` が JSON でない | `415` |
 
@@ -44,6 +44,7 @@ hmac_header = "X-Hub-Signature-256"
 | `type_fixed` | 固定の Event Type |
 | `hmac_secret` / `hmac_secret_env` | 設定されていれば受信時に HMAC 検証する |
 | `hmac_header` | 既定 `X-Hub-Signature-256`。空・空白は設定不可 |
+| `auth_bearer` / `auth_bearer_env` | 設定されていれば受信時に `Authorization: Bearer <token>` を検証する(欠落・不一致は `401`)。HMAC と併用時は両方の合格が必要(#38) |
 
 Event Type の決定順は header → JSON フィールド → 固定値。いずれも取れない場合は受理しない。
 

@@ -4,14 +4,14 @@
 
 `vectum` v0.1.0 is a lightweight, self-hosted event router built with Gleam on the BEAM. HTTP webhooks are normalized into a common envelope, routed by TOML rules, and delivered to HTTP destinations. SQLite provides local persistence, at-least-once delivery, retries, and dead-letter operations without an external database.
 
-The supported deployment is single-node and offline-capable except for destination network access. There is no broker/cluster, web UI, hot reload, or automatic retention subsystem.
+The supported deployment is single-node and offline-capable except for destination network access. There is no broker/cluster, web UI, or hot reload. Retention of completed data is automatic: when any `[retention]` value is above 0 the dispatcher prunes once an hour at most, and `vectum prune [--dry-run]` triggers the same transactional prune manually (#30).
 
 ## Architecture & Data Flow
 
 - Boot: `src/vectum.gleam:main` passes argv to `src/vectum/app.gleam`. `run_server` loads and validates TOML, initializes shutdown state, performs one-time SQLite recovery, starts the OTP tree, then binds Mist.
 - Ingress: `src/vectum/ingress.gleam` serves `GET /health`, `/ready`, `/metrics`, and `POST /events/:source`. It resolves live actor references through `registry`, enforces shutdown admission and body limits, and maps typed rejection errors to HTTP status codes.
-- Admission: `src/vectum/accept.gleam` validates source/content type/HMAC/JSON/event type, normalizes metadata, and calls `route.select_destinations`. `storage.call_accept` atomically persists the event and one pending delivery per unique destination before returning `202`.
-- Core: `event`, `filter`, `route`, `config`, `hmac`, and `retry` are transport-independent value/validation modules. Keep HTTP, OTP, and FFI concerns at the edges.
+- Admission: `src/vectum/accept.gleam` validates source/content type/HMAC & Bearer auth/JSON/event type, normalizes metadata, and calls `route.select_destinations`. `storage.call_accept` atomically persists the event and one pending delivery per unique destination before returning `202`. With both HMAC and Bearer configured on a source, both must pass (AND).
+- Core: `event`, `filter`, `route`, `config`, `hmac`, `bearer`, and `retry` are transport-independent value/validation modules. Keep HTTP, OTP, and FFI concerns at the edges.
 - Egress: `src/vectum/dispatcher.gleam` ticks every 200 ms, computes available concurrency, claims due rows, and runs guarded workers. `delivery.build_outgoing` creates the envelope and idempotency headers; results become success, retry with capped exponential backoff/jitter, or dead letter.
 - Runtime: `supervisor.gleam` owns Metrics, Storage, and Dispatcher under a `OneForOne` tree. `storage.gleam` serializes SQLite access. `registry.gleam` stores live actor subjects and must be consulted after restarts; do not cache subjects across actor death.
 - Shutdown: `shutdown.gleam` plus the Erlang signal handler stop new intake/claims, drain accepted requests and workers until `VECTUM_SHUTDOWN_GRACE_MS` (default 10 seconds), then halt.
@@ -40,9 +40,9 @@ cp examples/minimal.toml router.toml
 gleam run -- run --config router.toml
 ```
 
-The config precedence is `--config <path>` > `$VECTUM_CONFIG` > `./router.toml`. HMAC environment variables named by `hmac_secret_env` must be present when validating or running a config.
+The config precedence is `--config <path>` > `$VECTUM_CONFIG` > `./router.toml`. Environment variables named by `hmac_secret_env` / `auth_bearer_env` must be present when validating or running a config.
 
-For a local smoke request, run the server and post JSON to `http://127.0.0.1:8080/events/internal`. The compiled CLI supports `vectum run`, `validate`, `dead list`, `dead retry <delivery-id>`, and `dead delete <delivery-id>`; during development use `gleam run --` with the same arguments.
+For a local smoke request, run the server and post JSON to `http://127.0.0.1:8080/events/internal`. The compiled CLI supports `vectum run`, `validate`, `prune [--dry-run]`, `dead list`, `dead retry <delivery-id>`, and `dead delete <delivery-id>`; during development use `gleam run --` with the same arguments.
 
 Container commands:
 
@@ -58,7 +58,7 @@ docker run --rm -p 8080:8080 -v ./data:/data vectum:0.1.0
 - Inject boundaries used by tests, such as environment lookup and outbound send functions. Stateful tests use real SQLite actors with `:memory:` databases and local stub closures.
 - Treat the Storage actor as the SQLite serialization boundary. Preserve transaction atomicity, the unique `(event_id, destination)` invariant, and `status = 'delivering'` guards on mark operations.
 - Routing uses exact or `*` event types, dotted paths, stable destination deduplication, and AND semantics for filters on one route. Metadata keys are normalized case-insensitively.
-- Outbound requests always include `Content-Type: application/json`, `X-Event-Id`, and `Idempotency-Key` (both IDs match); destination HMAC is optional.
+- Outbound requests always include `Content-Type: application/json`, `X-Event-Id`, and `Idempotency-Key` (both IDs match); destination HMAC and Bearer (`Authorization`, via `auth_bearer`/`auth_bearer_env`) headers are optional per-destination settings.
 - Use `registry` lookups for actor references on every request/tick. FFI belongs in the Erlang `*_ffi.erl` files with a thin Gleam wrapper.
 - Logs are single-line JSON on stdout. `[log]` TOML configuration is not implemented; source `path` is parsed but ingress remains `/events/<name>`. Config changes require a restart.
 
@@ -83,7 +83,7 @@ docker run --rm -p 8080:8080 -v ./data:/data vectum:0.1.0
 
 ## Testing & QA
 
-- Framework: gleeunit, entered through `test/vectum_test.gleam` calling `gleeunit.main()`. There are 18 `*_test.gleam` files (17 test modules plus the runner) with 110 exported `pub fn *_test` tests.
+- Framework: gleeunit, entered through `test/vectum_test.gleam` calling `gleeunit.main()`. There are 18 `*_test.gleam` files (17 test modules plus the runner) with 219 exported `pub fn *_test` tests.
 - Run `gleam test` for the full suite; no per-file command, coverage configuration, upload, or minimum coverage gate is documented.
 - Pure tests construct `Event`, filters, routes, retry policies, config TOML, HMAC inputs, and CLI values inline. Stateful tests use real `sqlight` `:memory:` connections/actors, injected send closures, process kills, panic closures, and bounded polling helpers.
 - Test isolation is explicit because gleeunit has no shared setup/teardown. File-backed cases clean `tmp/vectum-{recover,wal,durability,corrupt}-test.db` and SQLite sidecars.

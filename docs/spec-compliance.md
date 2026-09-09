@@ -23,6 +23,7 @@
 | At-least-once Delivery | 満たす | 起動時に `delivering` を復旧 |
 | SQLite Persistence | 満たす | 受理と Delivery 作成は同一 txn |
 | HMAC Verification / Signing | 満たす | Source / Destination |
+| Bearer Token 認証 | 満たす | Source 受信検証 / Destination 送信ヘッダ。HMAC 併用時は AND(#38) |
 | Metrics | 満たす | 名前は実装判断どおり |
 | TOML Configuration | 満たす | 起動時検証あり |
 | CLI Operations | 満たす | コマンド名は `vectum` |
@@ -32,7 +33,7 @@
 
 ## 満たしている詳細
 
-- 未知 Source は 404。HMAC 失敗は 401。Payload 超過は 413。非 JSON は 415
+- 未知 Source は 404。HMAC / Bearer 認証の失敗は 401。Payload 超過は 413。非 JSON は 415(#38)
 - Source に `path` を設定するとそのパスで受信(既定は `/events/<name>`)。他 Source のパス・未知パスは 404(#39)
 - フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path。`[[routes.filters]]` は AND 結合。OR / ネスト条件は排他の `[routes.condition]`(op = `all` / `any`、最大 4 段、短絡評価)で表現(#36)
 - `metadata.<key>` パスで HTTP ヘッダ由来の Metadata をフィルタできる
@@ -45,6 +46,7 @@
 - 実行中に滞留した delivering を dispatcher の reaper が定期的に検出して pending に戻す(閾値は実効タイムアウト最大値 ×2、最低 10 秒)
 - `GET /health`、`GET /ready`、構造化 JSON ログ
 - Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`)。SELECT のみで状態を変えず、`--limit` 既定 50・上限 1000。存在しない ID は非 0 終了(#31)
+- 自動 retention と手動 prune を実装: `[retention]` の保持日数(0 は無期限保持)を過ぎた terminal な Delivery(`succeeded` / `dead_letter`)と孤児 Event を、dispatcher が 1 時間に最大 1 回、または `vectum prune [--dry-run]` で同一トランザクション削除する。`pending` / `delivering` / `retry_scheduled` は対象外(#30)
 - オフライン起動（Destination が Internet 上ならその通信のみ必要）
 - HTTPS Destination は httpc TLS。Ingress TLS は reverse proxy 前提
 
@@ -61,7 +63,7 @@
 
 ## 正しく対象外にしているもの
 
-Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、ホットリロード、自動 retention、Transform Engine。
+Web UI、MQTT / NATS / SQS / Kafka / WebSocket、クラスタ、exactly-once、ホットリロード、Transform Engine。
 
 ## 次に埋めるなら
 

@@ -18,6 +18,7 @@ v0.1 の `type` は `http` のみ。配送は `POST`。
 - `X-Event-Id`
 - `Idempotency-Key`（Event ID と同じ値）
 - Destination に HMAC がある場合は `hmac_header`（既定 `X-Vectum-Signature`）
+- Destination に Bearer Token がある場合は `authorization: Bearer <token>`（RFC 6750、#38）
 
 `timeout_ms` を省略すると `[delivery].timeout_ms`（既定 10000）を使う。
 
