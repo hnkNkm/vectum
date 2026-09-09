@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/dict
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -49,14 +50,35 @@ pub fn handle_connection(
   metrics: Metrics,
   req: Request(Connection),
 ) -> Response(ResponseData) {
-  case req.method, request.path_segments(req) {
-    http.Get, ["health"] -> text(200, "ok\n")
-    http.Get, ["ready"] -> ready(store)
-    http.Get, ["metrics"] -> metrics_response(store, metrics)
-    http.Post, ["events", source] ->
-      post_event(config, store, metrics, source, req)
+  case req.method, req.path {
+    http.Get, "/health" -> text(200, "ok\n")
+    http.Get, "/ready" -> ready(store)
+    http.Get, "/metrics" -> metrics_response(store, metrics)
+    // POST は設定された `sources.path` (既定 `/events/<name>`) と完全一致で
+    // Source を解決する。未知パスは 404。
+    http.Post, _ -> post_to_path(config, store, metrics, req)
     _, _ -> json_error(404, "not found")
   }
+}
+
+fn post_to_path(
+  config: Config,
+  store: Store,
+  metrics: Metrics,
+  req: Request(Connection),
+) -> Response(ResponseData) {
+  case source_paths(config) |> dict.get(req.path) {
+    Ok(source) -> post_event(config, store, metrics, source, req)
+    Error(_) -> json_error(404, "not found")
+  }
+}
+
+/// `sources.path` → source 名。config 検証で重複・予約衝突は排除済みなので、
+/// 最初の登録を優先する必要はなく、末尾上書きで十分。
+fn source_paths(config: Config) -> dict.Dict(String, String) {
+  list.fold(config.sources, dict.new(), fn(acc, source) {
+    dict.insert(acc, source.path, source.name)
+  })
 }
 
 fn post_event(

@@ -53,10 +53,15 @@ concurrency = 8
 
 ## 起動時検証
 
-- Source / Destination / Route 名の重複
+- Source / Destination / Route 名の重複、Source の受信パス重複・予約パス衝突
+- `sources.path` が `/` で始まり `/` 単独でなく、`?` `#` 空白を含まないこと
 - Route が未知の Source または Destination を参照していないこと
 - 未知のフィルタ演算子がないこと
 - Destination URL が http(s) であること
 - timeout / retry が正の値であること
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）
+- `hmac_header` が空・空白でないこと（Source / Destination とも）
 - Destination `type` が `http` であること
+
+検証に失敗すると起動しない。一方、既知セクション内の未知キーは
+`warning:` として stderr へ出力するだけで失敗させない (validate / run の続行)。

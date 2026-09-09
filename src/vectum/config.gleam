@@ -492,6 +492,7 @@ fn validate(config: Config) -> List(String) {
     ),
     list.flat_map(config.sources, validate_source),
     list.flat_map(config.destinations, validate_destination),
+    validate_source_paths(config.sources),
     list.flat_map(config.routes, fn(route) {
       validate_route(route, config.sources, config.destinations)
     }),
@@ -558,6 +559,79 @@ fn validate_source(source: Source) -> List(String) {
   list.append(name_errors, list.append(type_errors, hmac_errors))
 }
 
+/// `sources.path` の個別の構文規則。重複・予約パス衝突は全体照合で扱う。
+fn validate_source_path(source: Source) -> List(String) {
+  let subject = "source " <> source.name <> " path"
+  let empty = case source.path {
+    "" -> [subject <> " must not be empty"]
+    _ -> []
+  }
+  let starts = case string.starts_with(source.path, "/") {
+    True -> []
+    False -> [subject <> " must start with '/'"]
+  }
+  let root = case source.path == "/" {
+    True -> [subject <> " must not be '/'"]
+    False -> []
+  }
+  let forbidden =
+    string.contains(source.path, "?")
+    || string.contains(source.path, "#")
+    || has_whitespace(source.path)
+  let chars = case forbidden {
+    True -> [subject <> " must not contain '?', '#' or whitespace"]
+    False -> []
+  }
+  list.append(empty, list.append(starts, list.append(root, chars)))
+}
+
+/// 全 source の受信パス照合: 個別の構文規則・重複・予約パス衝突を拒否する。
+fn validate_source_paths(sources: List(Source)) -> List(String) {
+  let syntax = list.flat_map(sources, validate_source_path)
+  let reserved = ["/health", "/ready", "/metrics"]
+  let #(_seen, dups, collided) =
+    list.fold(sources, #(dict.new(), [], []), fn(acc, source) {
+      let #(seen, dups, collided) = acc
+      let dups = case dict.get(seen, source.path) {
+        Ok(_) -> [
+          "duplicate source path: "
+            <> source.path
+            <> " (defined by "
+            <> source.name
+            <> ")",
+          ..dups
+        ]
+        Error(_) -> dups
+      }
+      let collided = case list.contains(reserved, source.path) {
+        True -> [
+          "source path "
+            <> source.path
+            <> " collides with a reserved ingress endpoint",
+          ..collided
+        ]
+        False -> collided
+      }
+      #(dict.insert(seen, source.path, True), dups, collided)
+    })
+  let #(dups, collided) = #(list.reverse(dups), list.reverse(collided))
+  list.append(syntax, list.append(dups, collided))
+}
+
+fn validate_hmac_header(header: String, subject: String) -> List(String) {
+  case string.trim(header) {
+    "" -> [subject <> " hmac_header must not be empty"]
+    _ -> []
+  }
+}
+
+fn has_whitespace(text: String) -> Bool {
+  string.contains(text, " ")
+  || string.contains(text, "\t")
+  || string.contains(text, "\n")
+  || string.contains(text, "\r")
+}
+
 fn validate_destination(destination: Destination) -> List(String) {
   let HttpDestination(name:, url:, timeout_ms:, hmac_header:, ..) = destination
   let url_errors = case uri.parse(url) {
@@ -581,15 +655,6 @@ fn validate_destination(destination: Destination) -> List(String) {
   }
   let hmac_errors = validate_hmac_header(hmac_header, "destination " <> name)
   list.append(url_errors, list.append(timeout_errors, hmac_errors))
-}
-
-/// 空・空白のみの hmac_header は検証・署名ヘッダとして無意味 (空ヘッダ名は
-/// 照合不能 / 不正な wire header になる) ため config 時に落とす。
-fn validate_hmac_header(header: String, subject: String) -> List(String) {
-  case string.trim(header) {
-    "" -> [subject <> " hmac_header must not be empty"]
-    _ -> []
-  }
 }
 
 fn validate_route(
@@ -789,7 +854,7 @@ fn key_label(key: List(String)) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 未知キー警告
+// 未知キー警告 (Task B)
 // 未知キーは失敗させず、Config.warnings に載せて stderr へ出すだけ。
 // ---------------------------------------------------------------------------
 
