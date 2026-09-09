@@ -94,3 +94,138 @@ pub fn int_comparison_is_exact_test() {
     )
   assert filter.matches(f, data)
 }
+
+// ---- Grouped condition(#36) ----
+
+fn resolve_in(
+  data: event.EventValue,
+) -> fn(filter.Filter) -> Result(event.EventValue, Nil) {
+  fn(f: filter.Filter) { event.get_path(data, f.path) }
+}
+
+fn amount(value: Int) -> filter.Filter {
+  filter.Filter(path: "amount", op: filter.Gte, value: event.Int(value))
+}
+
+/// `A OR B`(root any): leaf のどれかがマッチすれば真。
+pub fn condition_any_or_test() {
+  let condition =
+    filter.Condition(op: filter.Any, children: [
+      filter.Leaf(amount(200_000)),
+      filter.Leaf(filter.Filter(
+        path: "currency",
+        op: filter.Eq,
+        value: event.String("jpy"),
+      )),
+    ])
+  let resolve = resolve_in(payment())
+  assert filter.matches_condition(condition, resolve)
+
+  let no_match =
+    filter.Condition(op: filter.Any, children: [
+      filter.Leaf(amount(200_000)),
+      filter.Leaf(filter.Filter(
+        path: "currency",
+        op: filter.Eq,
+        value: event.String("usd"),
+      )),
+    ])
+  assert !filter.matches_condition(no_match, resolve)
+}
+
+/// `(A AND B) OR C`: root any の子に all group を持つ。
+pub fn condition_all_group_inside_any_test() {
+  // (amount >= 100_000 AND currency == "jpy") OR repository.name == "docs"
+  let condition =
+    filter.Condition(op: filter.Any, children: [
+      filter.Group(
+        filter.Condition(op: filter.All, children: [
+          filter.Leaf(amount(100_000)),
+          filter.Leaf(filter.Filter(
+            path: "currency",
+            op: filter.Eq,
+            value: event.String("jpy"),
+          )),
+        ]),
+      ),
+      filter.Leaf(filter.Filter(
+        path: "repository.name",
+        op: filter.Eq,
+        value: event.String("docs"),
+      )),
+    ])
+  // group 側がマッチ(payment: amount 150_000 / jpy / backend)
+  assert filter.matches_condition(condition, resolve_in(payment()))
+  // C 側だけマッチ: 1 要素 object にデータを差し替え
+  let docs =
+    event.Object(
+      dict.from_list([
+        #(
+          "repository",
+          event.Object(dict.from_list([#("name", event.String("docs"))])),
+        ),
+      ]),
+    )
+  assert filter.matches_condition(condition, resolve_in(docs))
+  // どちらも偽
+  let other =
+    event.Object(
+      dict.from_list([
+        #(
+          "repository",
+          event.Object(dict.from_list([#("name", event.String("other"))])),
+        ),
+      ]),
+    )
+  assert !filter.matches_condition(condition, resolve_in(other))
+}
+
+/// exists / not_exists は group 内でも leaf として使える。
+pub fn condition_exists_and_not_exists_test() {
+  let present =
+    filter.Condition(op: filter.All, children: [
+      filter.Leaf(filter.Filter(
+        path: "amount",
+        op: filter.Exists,
+        value: event.Null,
+      )),
+      filter.Leaf(filter.Filter(
+        path: "nope",
+        op: filter.NotExists,
+        value: event.Null,
+      )),
+    ])
+  assert filter.matches_condition(present, resolve_in(payment()))
+
+  let missing =
+    filter.Condition(op: filter.All, children: [
+      filter.Leaf(filter.Filter(
+        path: "nope",
+        op: filter.Exists,
+        value: event.Null,
+      )),
+    ])
+  assert !filter.matches_condition(missing, resolve_in(payment()))
+  // all は 1 つでも偽なら偽
+  let one_false =
+    filter.Condition(op: filter.All, children: [
+      filter.Leaf(amount(100_000)),
+      filter.Leaf(filter.Filter(
+        path: "amount",
+        op: filter.NotExists,
+        value: event.Null,
+      )),
+    ])
+  assert !filter.matches_condition(one_false, resolve_in(payment()))
+}
+
+pub fn parse_group_op_test() {
+  let assert Ok(filter.All) = filter.parse_group_op("all")
+  let assert Ok(filter.Any) = filter.parse_group_op("ANY")
+  let assert Error(_) = filter.parse_group_op("xor")
+}
+
+pub fn group_op_to_string_test() {
+  assert filter.group_op_to_string(filter.All) == "all"
+  assert filter.group_op_to_string(filter.Any) == "any"
+}
