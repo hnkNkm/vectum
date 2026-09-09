@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- 開発者向けガイド AGENTS.md を追加し、現行実装(障害時再起動・recover・reaper 等)に追従させた(#74)
+- Dispatcher がワーカーを `spawn_unlinked` で生成し、ワーカー panic 時も concurrency 枠と slot を確実に解放するよう変更。Dispatcher 側のクラッシュでもワーカーを巻き込まない(#43)
+- Storage への呼び出しを `try_call` + monitor 化し、actor 側の失敗・クラッシュでも Dispatcher / CLI が panic しないようにした(#44)
+- Ingress で chunked `Transfer-Encoding` を `413` で拒否するようにした(#45)
+- `claim_due` を単一 `UPDATE … RETURNING` 化し、失敗時は rollback する原子的な claim に変更(#47)
+- SQLite に `journal_mode=wal` と `busy_timeout` を設定し、並行書き込みの競合を緩和(#49)
+- 破損した event 行は `null` 配送せずエラー扱いにした(#50)
+- `mark_success` / `mark_retry` / `mark_dead` に `delivering` ガードと `delivery_stale` 検知を追加し、古いワーカーの遅延完了が新しい claim を上書きしないようにした(#48,#61,#69)
+- graceful shutdown 時に受付中の in-flight POST の完了を待つようにした(#55)
+- Ingress の Content-Type 照合をメディア型の完全一致にし、空 event-type を拒否するようにした(#66)
+- フィルタの Int 精度を扱い、`neq` 演算子と Metadata フィールドをサポート(#65)
+- ログの時刻を JSON 準拠の形式で出力するようにした(#64)
+- CLI の `--config` / 環境変数解決を堅牢化し、不明なオプションや不正な組み合わせをエラーにした(#67)
+- 空の HMAC secret を設定時に拒否するようにした(#46,#63)
+- README のクイックスタート手順を実挙動に合わせて修正(#62)
+- mist の bind 失敗時はエラーメッセージを出して終了するようにした(#60)
+- CLI の dead 操作で storage のみを開くようにし、起動に不要な配送 worker を立てないようにした(#59)
+- 空の destinations リストを設定検証でエラーにした(#58)
 - `delivery_latency_seconds` ヒストグラムを追加。配送レイテンシを `_bucket{le=…}` / `_sum` / `_count` で公開する(境界 5 ms〜10 s の固定 11 点 + `+Inf`)。`delivery_latency_milliseconds_sum` / `_count` は後方互換のため維持(#42)
 - ワーカーが panic しても concurrency 枠を確実に解放するよう変更。枠漏れによる配送停止を防止(#26)
 - Metadata フィルタのキー照合を大小文字非依存に変更(`metadata.X-GitHub-Event` と `metadata.x-github-event` が同義)(#27)
@@ -24,6 +42,16 @@
 - Dispatcher 内部エラーでも `[delivery]` の backoff と `max_attempts` を使う
 - `vectum dead retry` で `attempts` を 0 に戻す
 - Docker 既定設定の SQLite を `/data/router.db` にした
+
+### 予定 (このラウンドの CI / docs / 関連ブランチ)
+
+- claim-generation fencing による古い claim の無効化(F2)
+- httpc の自動リトライ無効化(F1)
+- `synchronous=full` による完全永続化オプション(F3)
+- 空 `hmac_header` の設定検証(F4)
+- Source の `path` による受信パス指定の実装(#39)
+- read-only ops CLI(`status` / `events` / `deliveries`)(#31)
+- CI に build・example 検証・E2E smoke を追加
 
 ## 0.1.0 - 2026-08-23
 
