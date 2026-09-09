@@ -47,7 +47,24 @@ max_backoff_ms = 60000
 timeout_ms = 10000
 jitter = true
 concurrency = 8
+
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
 ```
+
+`[retention]` は完了済みデータの保持日数(整数・日)を設定する(#30)。
+未設定または 0 の区分は無期限保持(従来どおり)。
+
+- `succeeded_days`: `succeeded` の Delivery を `updated_at` から何日残すか
+- `dead_letter_days`: `dead_letter` の Delivery を `updated_at` から何日残すか
+- `events_days`: 参照する Delivery が残っていない Event(孤児)を
+  `received_at` から何日残すか
+
+0 より大きい値が 1 つでもあると、dispatcher が 1 時間に最大 1 回の頻度で
+自動削除をおこなう。手動実行は `vectum prune [--dry-run]`。削除の意味論は
+[persistence.md](./persistence.md)、運用は [operations.md](./operations.md)。
 
 `[[routes]]` のフィルタ条件には、従来の AND 専用 `[[routes.filters]]` のほか、
 AND / OR をネストできる `[routes.condition]` を 1 つ書ける。両方は併設できない。
@@ -75,6 +92,30 @@ group ノードは `op`(`all` / `any`)と `filters`(leaf または group の配�
 
 ログは常に構造化 JSON を標準出力へ出す。`[log]` セクションは未実装。
 
+## 認証（HMAC / Bearer Token）
+
+Source / Destination には認証用の秘密を設定できる。検証規則はすべて同じ:
+
+- `hmac_secret` / `hmac_secret_env` — HMAC 署名鍵（Source は受信検証、Destination は署名付与）
+- `auth_bearer` / `auth_bearer_env` — Bearer Token。Source は受信時に `Authorization: Bearer <token>` を検証し、Destination は配送時に同ヘッダを付与する
+
+インライン（`hmac_secret` / `auth_bearer`）と環境変数参照（`*_env`）は**併設できない**。値が空・空白のみの場合も設定エラー。`*_env` が指す環境変数が存在しない場合も起動時エラーになる。どちらも未設定なら検証・付与しない。
+
+HMAC と Bearer は同時に設定できる。Source は両方の検証に合格しないと受理しない（AND）。Destination は両方のヘッダを送る。
+
+```toml
+[[sources]]
+name = "internal-api"
+type_from_json = "type"
+auth_bearer_env = "VECTUM_SOURCE_TOKEN"
+
+[[destinations]]
+name = "notify-api"
+type = "http"
+url = "https://example.invalid/events"
+auth_bearer_env = "NOTIFY_API_TOKEN"
+```
+
 ## 起動時検証
 
 - Source / Destination / Route 名の重複、Source の受信パス重複・予約パス衝突
@@ -87,8 +128,10 @@ group ノードは `op`(`all` / `any`)と `filters`(leaf または group の配�
   以外では必須であること
 - Destination URL が http(s) であること
 - timeout / retry が正の値であること
+- `[retention]` の値が 0 以上の整数であること(負数はエラー)
 - `hmac_secret_env` が指す環境変数が存在する（validate / run 時）
 - `hmac_header` が空・空白でないこと（Source / Destination とも）
+- `auth_bearer` / `auth_bearer_env` の併設、空・空白のみの値、`auth_bearer_env` が指す環境変数の欠落は設定エラー（`hmac_secret` と同じ規則）
 - Destination `type` が `http` であること
 
 検証に失敗すると起動しない。一方、既知セクション内の未知キーは

@@ -12,6 +12,7 @@ import vectum/event.{type EventValue}
 import vectum/filter.{type Condition, type ConditionNode, type Filter, Filter}
 import vectum/retry.{type Policy, Policy}
 import vectum/route.{type Route, Route}
+import vectum/storage.{type Retention, Retention}
 
 pub type Config {
   Config(
@@ -22,6 +23,8 @@ pub type Config {
     routes: List(Route),
     delivery: Policy,
     concurrency: Int,
+    /// `[retention]` 設定。日数 0 は無期限保持(既定)。
+    retention: Retention,
     /// 未知キーなど失敗させない非致命的な検出内容。validate / run 時に stderr へ出す。
     warnings: List(String),
   )
@@ -44,6 +47,7 @@ pub type Source {
     type_fixed: Option(String),
     hmac_secret: Option(String),
     hmac_header: String,
+    bearer_token: Option(String),
   )
 }
 
@@ -54,6 +58,7 @@ pub type Destination {
     timeout_ms: Option(Int),
     hmac_secret: Option(String),
     hmac_header: String,
+    bearer_token: Option(String),
   )
 }
 
@@ -152,6 +157,7 @@ fn decode_config(
   let server = decode_server(doc)
   let storage = decode_storage(doc)
   let delivery = decode_delivery(doc)
+  let retention = decode_retention(doc)
   let sources = decode_sources(doc, getenv)
   let destinations = decode_destinations(doc, getenv)
   let routes = decode_routes(doc)
@@ -161,16 +167,27 @@ fn decode_config(
       result_errors(server),
       result_errors(storage),
       result_errors(delivery),
+      result_errors(retention),
       result_errors(sources),
       result_errors(destinations),
       result_errors(routes),
     ])
 
-  case errors, server, storage, delivery, sources, destinations, routes {
+  case
+    errors,
+    server,
+    storage,
+    delivery,
+    retention,
+    sources,
+    destinations,
+    routes
+  {
     [],
       Ok(server),
       Ok(storage),
       Ok(#(policy, concurrency)),
+      Ok(retention),
       Ok(sources),
       Ok(destinations),
       Ok(routes)
@@ -184,6 +201,7 @@ fn decode_config(
           routes:,
           delivery: policy,
           concurrency:,
+          retention:,
           warnings: [],
         )
       case validate(config) {
@@ -191,7 +209,7 @@ fn decode_config(
         messages -> Error(ConfigError(messages))
       }
     }
-    _, _, _, _, _, _, _ -> Error(ConfigError(errors))
+    _, _, _, _, _, _, _, _ -> Error(ConfigError(errors))
   }
 }
 
@@ -244,6 +262,72 @@ fn decode_delivery(
   ))
 }
 
+/// `[retention]` セクション。各キーは日数で、未設定 / 0 は無期限保持。
+/// 負数は誤設定のため拒否する(自動 prune の cutoff 計算を壊すため)。
+fn decode_retention(
+  doc: Dict(String, Toml),
+) -> Result(Retention, List(String)) {
+  use succeeded_days <- result.try(
+    retention_days(doc, ["retention", "succeeded_days"]),
+  )
+  use dead_letter_days <- result.try(
+    retention_days(doc, ["retention", "dead_letter_days"]),
+  )
+  use events_days <- result.try(
+    retention_days(doc, ["retention", "events_days"]),
+  )
+  Ok(Retention(succeeded_days:, dead_letter_days:, events_days:))
+}
+
+fn retention_days(
+  doc: Dict(String, Toml),
+  key: List(String),
+) -> Result(Int, List(String)) {
+  let label = key_label(key)
+  case tom.get_int(doc, key) {
+    Ok(value) if value >= 0 -> Ok(value)
+    Ok(_) -> Error([label <> " must be >= 0"])
+    Error(tom.NotFound(_)) -> Ok(0)
+    Error(tom.WrongType(_, expected, got)) ->
+      Error([label <> " must be " <> expected <> ", got " <> got])
+  }
+}
+
+/// `vectum prune` 用に `[storage] path` と `[retention]` だけ読む。
+/// sources / destinations の secret 検証エラーで操作不能にならないようにする
+/// (load_storage_path と同様)。
+pub fn load_retention(
+  path: String,
+) -> Result(#(String, Retention), ConfigError) {
+  case simplifile.read(path) {
+    Error(error) ->
+      Error(
+        ConfigError([
+          "failed to read config " <> path <> ": " <> string.inspect(error),
+        ]),
+      )
+    Ok(text) -> parse_retention(text)
+  }
+}
+
+pub fn parse_retention(
+  text: String,
+) -> Result(#(String, Retention), ConfigError) {
+  case tom.parse(text) {
+    Error(error) ->
+      Error(ConfigError(["invalid TOML: " <> string.inspect(error)]))
+    Ok(doc) ->
+      case decode_storage(doc), decode_retention(doc) {
+        Ok(storage_config), Ok(retention) ->
+          Ok(#(storage_config.path, retention))
+        Error(storage_messages), Error(retention_messages) ->
+          Error(ConfigError(list.append(storage_messages, retention_messages)))
+        Error(messages), Ok(_) -> Error(ConfigError(messages))
+        Ok(_), Error(messages) -> Error(ConfigError(messages))
+      }
+  }
+}
+
 fn decode_sources(
   doc: Dict(String, Toml),
   getenv: fn(String) -> Result(String, Nil),
@@ -268,7 +352,18 @@ fn decode_source(
     ["hmac_header"],
     default_hmac_source_header,
   ))
-  use hmac_secret <- result.try(resolve_secret(table, name, "source", getenv))
+  use hmac_secret <- result.try(resolve_hmac_secret(
+    table,
+    name,
+    "source",
+    getenv,
+  ))
+  use bearer_token <- result.try(resolve_bearer_token(
+    table,
+    name,
+    "source",
+    getenv,
+  ))
   Ok(Source(
     name:,
     path:,
@@ -277,6 +372,7 @@ fn decode_source(
     type_fixed:,
     hmac_secret:,
     hmac_header:,
+    bearer_token:,
   ))
 }
 
@@ -301,7 +397,13 @@ fn decode_destination(
     ["hmac_header"],
     default_hmac_dest_header,
   ))
-  use hmac_secret <- result.try(resolve_secret(
+  use hmac_secret <- result.try(resolve_hmac_secret(
+    table,
+    name,
+    "destination",
+    getenv,
+  ))
+  use bearer_token <- result.try(resolve_bearer_token(
     table,
     name,
     "destination",
@@ -309,7 +411,14 @@ fn decode_destination(
   ))
   case dest_type {
     "http" ->
-      Ok(HttpDestination(name:, url:, timeout_ms:, hmac_secret:, hmac_header:))
+      Ok(HttpDestination(
+        name:,
+        url:,
+        timeout_ms:,
+        hmac_secret:,
+        hmac_header:,
+        bearer_token:,
+      ))
     other ->
       Error([
         "destination " <> name <> " has unsupported adapter type: " <> other,
@@ -549,14 +658,53 @@ fn toml_value(toml: Toml) -> Result(EventValue, List(String)) {
   }
 }
 
-fn resolve_secret(
+/// `hmac_secret` / `hmac_secret_env` を `resolve_secret_pair` で解決する。
+fn resolve_hmac_secret(
   table: Dict(String, Toml),
   name: String,
   kind: String,
   getenv: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), List(String)) {
-  use inline <- result.try(opt_string_opt(table, ["hmac_secret"]))
-  use env_name <- result.try(opt_string_opt(table, ["hmac_secret_env"]))
+  resolve_secret_pair(
+    table,
+    name,
+    kind,
+    "hmac_secret",
+    "hmac_secret_env",
+    getenv,
+  )
+}
+
+/// `auth_bearer` / `auth_bearer_env` を `resolve_secret_pair` で解決する。
+fn resolve_bearer_token(
+  table: Dict(String, Toml),
+  name: String,
+  kind: String,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Option(String), List(String)) {
+  resolve_secret_pair(
+    table,
+    name,
+    kind,
+    "auth_bearer",
+    "auth_bearer_env",
+    getenv,
+  )
+}
+
+/// inline キーと env 参照キーのペアを解決する。規則は HMAC secret と共通:
+/// 併設は意図が曖昧なため拒否、空文字・空白のみの値は無意味なため拒否、
+/// env が指す変数の欠落は設定エラー。エラー文言に値は一切載せない。
+fn resolve_secret_pair(
+  table: Dict(String, Toml),
+  name: String,
+  kind: String,
+  inline_key: String,
+  env_key: String,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Option(String), List(String)) {
+  use inline <- result.try(opt_string_opt(table, [inline_key]))
+  use env_name <- result.try(opt_string_opt(table, [env_key]))
   // inline と env 参照の併設は意図が曖昧なため拒否する。
   // 空文字の secret は検証鍵として無意味なため拒否する。
   case inline, env_name {
@@ -565,7 +713,11 @@ fn resolve_secret(
         kind
         <> " "
         <> name
-        <> " sets both hmac_secret and hmac_secret_env ("
+        <> " sets both "
+        <> inline_key
+        <> " and "
+        <> env_key
+        <> " ("
         <> var
         <> "); use only one",
       ])
@@ -594,7 +746,7 @@ fn resolve_secret(
       }
     Some(value), None ->
       case string.trim(value) {
-        "" -> Error([kind <> " " <> name <> " has empty hmac_secret"])
+        "" -> Error([kind <> " " <> name <> " has empty " <> inline_key])
         _ -> Ok(Some(value))
       }
     None, None -> Ok(None)
@@ -1005,6 +1157,8 @@ const server_keys = ["host", "port", "max_body_bytes"]
 
 const storage_keys = ["path"]
 
+const retention_keys = ["succeeded_days", "dead_letter_days", "events_days"]
+
 const delivery_keys = [
   "max_attempts",
   "initial_backoff_ms",
@@ -1023,6 +1177,8 @@ const source_keys = [
   "hmac_header",
   "hmac_secret",
   "hmac_secret_env",
+  "auth_bearer",
+  "auth_bearer_env",
 ]
 
 const destination_keys = [
@@ -1033,6 +1189,8 @@ const destination_keys = [
   "hmac_header",
   "hmac_secret",
   "hmac_secret_env",
+  "auth_bearer",
+  "auth_bearer_env",
 ]
 
 const route_keys = [
@@ -1055,6 +1213,7 @@ fn collect_warnings(doc: Dict(String, Toml)) -> List(String) {
   list.flatten([
     warn_table_keys(doc, "server", server_keys),
     warn_table_keys(doc, "storage", storage_keys),
+    warn_table_keys(doc, "retention", retention_keys),
     warn_table_keys(doc, "delivery", delivery_keys),
     warn_row_keys(doc, "sources", source_keys, "source"),
     warn_row_keys(doc, "destinations", destination_keys, "destination"),

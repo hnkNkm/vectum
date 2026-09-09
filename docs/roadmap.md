@@ -14,8 +14,10 @@
 - Dead Letter
 - SQLite
 - HMAC
+- Bearer Token 認証（Source / Destination、#38）
 - CLI
 - Read-only 運用 CLI(`status` / `events list|show` / `deliveries list|show`、#31)
+- 自動 retention と `vectum prune`(`[retention]`、#30)
 - Metrics
 
 充足の細部は [spec-compliance.md](./spec-compliance.md)。
@@ -56,4 +58,3 @@ map."orderNo" = "order_id"
 - クラスタ
 - exactly-once
 - ホットリロード
-- 自動 retention

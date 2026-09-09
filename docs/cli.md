@@ -13,6 +13,7 @@ vectum deliveries show <delivery-id> --config router.toml
 vectum dead list --config router.toml
 vectum dead retry <delivery-id> --config router.toml
 vectum dead delete <delivery-id> --config router.toml
+vectum prune [--dry-run] --config router.toml
 ```
 
 開発中は `gleam run --` のあとに同じサブコマンドを渡せる。
@@ -29,6 +30,7 @@ vectum dead delete <delivery-id> --config router.toml
 | `dead list` | dead letter を一覧する |
 | `dead retry` | 指定 Delivery を `pending` に戻し、`attempts` を 0 にする |
 | `dead delete` | 指定 Delivery を削除する |
+| `prune` | `[retention]` の保持日数を過ぎた succeeded / dead_letter の Delivery と孤児 Event を削除する。`--dry-run` は削除せず件数だけ表示する |
 
 `--config` を省略すると `VECTUM_CONFIG`、それが無ければ `router.toml`。
 
@@ -119,6 +121,37 @@ d-4	evt-3	audit	retry_scheduled	3	1770000100000	1770000090000	1770000000000	1770
 (`src/vectum/cli.gleam` の `format_*`)。
 
 `events list` など件数 0 のときは `no events` / `no deliveries` と表示する。
+
+## prune (#30)
+
+`[retention]` の保持日数を過ぎた terminal な行を削除する。`--dry-run` を
+付けると削除せずに削除対象の件数だけを表示する。`pending` / `delivering` /
+`retry_scheduled` は決して削除しない。削除は 1 トランザクションで
+「Delivery → 孤児になった Event」の順に実行される。
+
+HMAC secret は不要。`[storage] path` と `[retention]` だけを読み、
+sources / destinations の検証エラーがあっても実行できる。
+`[retention]` に 0 より大きい値が 1 つも無ければ、メッセージを表示して
+何もせず終了コード 0 で終わる。
+
+```text
+$ vectum prune --dry-run --config router.toml
+succeeded_deliveries	2
+dead_letter_deliveries	1
+events	3
+would delete 3 deliveries and 3 events (dry-run; no changes made)
+```
+
+```text
+$ vectum prune --config router.toml
+succeeded_deliveries	2
+dead_letter_deliveries	1
+events	3
+deleted 3 deliveries and 3 events
+```
+
+設定の意味論は [persistence.md](./persistence.md)、運用の手順は
+[operations.md](./operations.md)、設定キーの一覧は [configuration.md](./configuration.md)。
 
 ### 使用上の注意
 

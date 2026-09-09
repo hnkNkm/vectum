@@ -15,11 +15,12 @@ Amazon EventBridge の完全互換実装ではありません。Kafka / RabbitMQ
 - HTTP Ingress (`POST /events/:source`)
 - HTTP Destination (POST)
 - JSON Event と共通 Envelope
-- 宣言的ルーティング / フィールドフィルタ / fan-out
-- Exponential backoff + jitter による retry
+- 宣言的ルーティング / フィールドフィルタ / fan-out（`[[routes.filters]]` の AND に加え、`[routes.condition]` で OR / ネスト条件を表現）
+- Exponential backoff + jitter による retry（有効な `Retry-After` はサーバ指定時刻で上書き）
 - Dead letter と CLI からの再配送
 - SQLite 永続化 (外部 DB 不要)
-- HMAC 検証 / 署名
+- HMAC / Bearer Token 認証（Source の受信検証 / Destination への付与。併用時は AND）
+- 自動 retention / 手動 prune (`vectum prune`、#30)
 - Prometheus 互換メトリクス
 - TOML 設定と CLI
 - オフライン / 閉域網で運用可能
@@ -78,6 +79,7 @@ vectum events list [--source S] [--type T] [--limit N] --config router.toml
 vectum events show <event-id> --config router.toml
 vectum deliveries list [--status S] [--destination D] [--limit N] --config router.toml
 vectum deliveries show <delivery-id> --config router.toml
+vectum prune [--dry-run] --config router.toml
 ```
 
 開発中は `gleam run --` のあとに同じサブコマンドを渡せます。
@@ -120,6 +122,12 @@ timeout_ms = 10000
 initial_backoff_ms = 1000
 max_backoff_ms = 60000
 jitter = true
+
+# 完了済みデータの保持日数(未設定 / 0 は無期限保持)
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
 ```
 
 起動時に設定全体を検証し、不正があればプロセスを終了します。
@@ -139,7 +147,7 @@ jitter = true
 
 - `404` Unknown Source
 - `400` Invalid JSON / Missing Event Type
-- `401` HMAC 検証失敗
+- `401` HMAC / Bearer 検証失敗
 - `413` Payload Size Exceeded
 - `415` Invalid Content-Type
 
@@ -166,7 +174,7 @@ gleam build
 
 ## コンテナ
 
-イメージ既定の設定は `examples/docker.toml` で、SQLite は `/data/router.db` に書きます。独自設定を載せる場合も `storage.path` を `/data` 配下にしてください。既定の Destination は動作確認用プレースホルダのため、上書きしない限り配送は失敗します。コンテナを公開する場合は Source への HMAC 設定が必須です。
+イメージ既定の設定は `examples/docker.toml` で、SQLite は `/data/router.db` に書きます。独自設定を載せる場合も `storage.path` を `/data` 配下にしてください。既定の Destination は動作確認用プレースホルダのため、上書きしない限り配送は失敗します。コンテナを公開する場合は Source への認証設定(HMAC または Bearer Token)が必須です。
 
 ```sh
 docker build -t vectum:0.1.0 .

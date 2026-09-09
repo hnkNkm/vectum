@@ -1,4 +1,6 @@
 import gleam/dict
+import gleam/list
+import gleam/string
 import vectum/accept
 import vectum/config
 import vectum/hmac
@@ -132,6 +134,193 @@ pub fn empty_header_event_type_is_missing_test() {
         #("x-hub-signature-256", hmac.sign_string("s3cret", body)),
       ],
       body,
+      "t",
+      "id",
+    )
+}
+
+// ---- Bearer Token 認証 (#38) ----
+
+const bearer_token = "tok-secret"
+
+const bearer_toml = "
+[[sources]]
+name = \"tok\"
+type_fixed = \"ping\"
+auth_bearer = \"tok-secret\"
+
+[[sources]]
+name = \"both\"
+type_fixed = \"ping\"
+hmac_secret = \"hmac-secret\"
+auth_bearer = \"tok-secret\"
+
+[[destinations]]
+name = \"audit\"
+url = \"http://127.0.0.1:9/events\"
+
+[[routes]]
+name = \"tok-ping\"
+source = \"tok\"
+event = \"ping\"
+destinations = [\"audit\"]
+
+[[routes]]
+name = \"both-ping\"
+source = \"both\"
+event = \"ping\"
+destinations = [\"audit\"]
+"
+
+fn bearer_cfg() -> config.Config {
+  let assert Ok(parsed) = config.parse_with(bearer_toml, fn(_) { Error(Nil) })
+  parsed
+}
+
+pub fn bearer_valid_token_is_accepted_test() {
+  let assert Ok(accept.Accepted(event:, destinations:)) =
+    accept.normalize(
+      bearer_cfg(),
+      "tok",
+      "application/json",
+      [#("authorization", "Bearer " <> bearer_token)],
+      "{}",
+      "t",
+      "id",
+    )
+  assert event.event_type == "ping"
+  assert destinations == ["audit"]
+  // Authorization は設定の有無にかかわらず Metadata に載らない。
+  assert dict.get(event.metadata, "authorization") == Error(Nil)
+  assert dict.get(event.metadata, "Authorization") == Error(Nil)
+  // token が Metadata のどの値にも漏れないこと。
+  assert list.all(dict.values(event.metadata), fn(value) {
+    !string.contains(value, bearer_token)
+  })
+}
+
+pub fn bearer_scheme_is_case_insensitive_test() {
+  // RFC 7235: scheme 名は大小文字非依存。
+  let assert Ok(accept.Accepted(..)) =
+    accept.normalize(
+      bearer_cfg(),
+      "tok",
+      "application/json",
+      [#("authorization", "bearer " <> bearer_token)],
+      "{}",
+      "t",
+      "id",
+    )
+}
+
+pub fn bearer_missing_token_is_401_test() {
+  let assert Error(accept.Reject(401, "bearer failure")) =
+    accept.normalize(
+      bearer_cfg(),
+      "tok",
+      "application/json",
+      [],
+      "{}",
+      "t",
+      "id",
+    )
+}
+
+pub fn bearer_wrong_or_malformed_token_is_401_test() {
+  // 誤 token・別 scheme・形式不正はいずれも 401。reason に token は出ない。
+  let bad = [
+    "Bearer not-the-token",
+    "Basic dXNlcjpwYXNz",
+    "bearer",
+    "Bearer a b",
+    "Bearer " <> bearer_token <> " extra",
+    "",
+  ]
+  assert list.all(bad, fn(value) {
+    case
+      accept.normalize(
+        bearer_cfg(),
+        "tok",
+        "application/json",
+        [#("authorization", value)],
+        "{}",
+        "t",
+        "id",
+      )
+    {
+      Error(accept.Reject(status, reason)) ->
+        status == 401
+        && !string.contains(reason, bearer_token)
+        && !string.contains(reason, "not-the-token")
+      _ -> False
+    }
+  })
+}
+
+/// #38: HMAC と Bearer を両方設定した Source は両方合格しないと受理しない (AND)。
+pub fn bearer_and_hmac_must_both_pass_test() {
+  let body = "{}"
+  let signed = [#("x-hub-signature-256", hmac.sign_string("hmac-secret", body))]
+
+  // 両方正しい → 受理
+  let assert Ok(accept.Accepted(..)) =
+    accept.normalize(
+      bearer_cfg(),
+      "both",
+      "application/json",
+      [#("authorization", "Bearer " <> bearer_token), ..signed],
+      body,
+      "t",
+      "id",
+    )
+  // HMAC 不一致は Bearer が正しくても拒否
+  let assert Error(accept.Reject(401, "hmac failure")) =
+    accept.normalize(
+      bearer_cfg(),
+      "both",
+      "application/json",
+      [
+        #("authorization", "Bearer " <> bearer_token),
+        #("x-hub-signature-256", "sha256=deadbeef"),
+      ],
+      body,
+      "t",
+      "id",
+    )
+  // Bearer 不一致は HMAC が正しくても拒否
+  let assert Error(accept.Reject(401, "bearer failure")) =
+    accept.normalize(
+      bearer_cfg(),
+      "both",
+      "application/json",
+      [#("authorization", "Bearer nope"), ..signed],
+      body,
+      "t",
+      "id",
+    )
+  // Authorization 自体が無い場合も拒否
+  let assert Error(accept.Reject(401, "bearer failure")) =
+    accept.normalize(
+      bearer_cfg(),
+      "both",
+      "application/json",
+      signed,
+      body,
+      "t",
+      "id",
+    )
+}
+
+pub fn bearer_not_configured_source_still_passes_without_auth_test() {
+  // Bearer 未設定の Source は Authorization 無しでも従来どおり通る。
+  // internal source は type_from_json で event type を解決する。
+  let assert Ok(accept.Accepted(..)) =
+    accept.normalize(
+      cfg(),
+      "internal",
+      "application/json",
+      [],
+      "{\"type\":\"ping\"}",
       "t",
       "id",
     )

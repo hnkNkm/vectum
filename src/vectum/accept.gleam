@@ -3,6 +3,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import vectum/bearer
 import vectum/config.{type Config, type Source}
 import vectum/event.{type Event, Event}
 import vectum/hmac
@@ -29,6 +30,7 @@ pub fn normalize(
   use source <- result.try(require_source(config, source_name))
   use _ <- result.try(require_json_content_type(content_type))
   use _ <- result.try(verify_hmac(source, headers, body))
+  use _ <- result.try(verify_bearer(source, headers))
   use data <- result.try(parse_body(body))
   use event_type <- result.try(extract_event_type(source, headers, data))
   let event =
@@ -104,6 +106,27 @@ fn verify_hmac(
           case hmac.verify_string(secret, body, provided) {
             True -> Ok(Nil)
             False -> Error(Reject(401, "hmac failure"))
+          }
+      }
+  }
+}
+
+/// Bearer Token 検証。設定されていれば `Authorization: Bearer <token>` を
+/// 必須とし、欠落・不一致は 401。token はエラー文言に載せない。
+/// HMAC と併設の場合は両方合格が必要 (AND)。
+fn verify_bearer(
+  source: Source,
+  headers: List(#(String, String)),
+) -> Result(Nil, Reject) {
+  case source.bearer_token {
+    None -> Ok(Nil)
+    Some(token) ->
+      case header_value(headers, "authorization") {
+        Error(_) -> Error(Reject(401, "bearer failure"))
+        Ok(provided) ->
+          case bearer.verify(token, provided) {
+            True -> Ok(Nil)
+            False -> Error(Reject(401, "bearer failure"))
           }
       }
   }

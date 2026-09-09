@@ -8,14 +8,14 @@
 | Event ID | UUID v7 (`youid`) |
 | JSON 内部表現 | `EventValue`（Null / Bool / Int / Float / String / Array / Object） |
 | HTTP Server | [mist](https://hex.pm/packages/mist) |
-| HTTP Client | [gleam_httpc](https://hex.pm/packages/gleam_httpc) |
+| HTTP Client | inets `httpc` 直接呼び出し(`vectum_httpc_ffi.erl`)。`{autoretry, 0}` / 証明書検証を明示(F1) |
 | SQLite | [sqlight](https://hex.pm/packages/sqlight) |
 | TOML | [tom](https://hex.pm/packages/tom) |
 | HMAC | [gleam_crypto](https://hex.pm/packages/gleam_crypto) SHA-256。Source 既定は GitHub 互換 `sha256=<hex>` |
 | Worker | Destination 単位ではなく、共有 worker pool + SQLite からの claim |
-| Retention | 自動削除しない |
-| Source 認証 | Source ごとの HMAC。`hmac_secret` または `hmac_secret_env` |
-| Destination 秘密情報 | `hmac_secret` / `hmac_secret_env` |
+| Retention | `[retention]` で 0 より大きい日数を指定した区分だけ自動削除する。dispatcher が 1 時間に最大 1 回、succeeded / dead_letter の Delivery と孤児 Event を 1 トランザクションで削除。手動実行は `vectum prune [--dry-run]`。0 / 未設定は無期限保持(#30) |
+| Source 認証 | Source ごとの HMAC(`hmac_secret` / `hmac_secret_env`)と / または Bearer Token(`auth_bearer` / `auth_bearer_env`)。両方設定時は両方の合格が必要(AND、#38) |
+| Destination 秘密情報 | HMAC は `hmac_secret` / `hmac_secret_env`、Bearer Token は `auth_bearer` / `auth_bearer_env`(#38) |
 | Metrics | `GET /metrics` の Prometheus テキスト |
 | Hot reload | なし（再起動で再読込） |
 | Payload 上限 | 既定 1 MiB（`server.max_body_bytes`） |

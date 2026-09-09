@@ -55,8 +55,14 @@ pub fn build_outgoing(
   event: Event,
   default_timeout_ms: Int,
 ) -> Outgoing {
-  let HttpDestination(url:, timeout_ms:, hmac_secret:, hmac_header:, ..) =
-    destination
+  let HttpDestination(
+    url:,
+    timeout_ms:,
+    hmac_secret:,
+    hmac_header:,
+    bearer_token:,
+    ..,
+  ) = destination
   let body = event.envelope_string(event)
   let timeout = option.unwrap(timeout_ms, default_timeout_ms)
   let headers = [
@@ -70,6 +76,11 @@ pub fn build_outgoing(
       #(string.lowercase(hmac_header), hmac.sign_string(secret, body)),
       ..headers
     ]
+  }
+  // ヘッダ名は他と同様に小文字で送る。値は `Bearer <token>` (RFC 6750)。
+  let headers = case bearer_token {
+    None -> headers
+    Some(token) -> [#("authorization", "Bearer " <> token), ..headers]
   }
   Outgoing(url:, headers:, body:, timeout_ms: timeout)
 }

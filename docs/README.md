@@ -14,7 +14,7 @@
 | [routing.md](./routing.md) | ルーティングルールとフィルタ |
 | [delivery.md](./delivery.md) | Destination、retry、dead letter |
 | [persistence.md](./persistence.md) | SQLite とトランザクション境界 |
-| [security.md](./security.md) | HMAC、TLS、Payload 上限 |
+| [security.md](./security.md) | HMAC / Bearer、TLS、Payload 上限 |
 | [configuration.md](./configuration.md) | TOML 設定と起動時検証 |
 | [cli.md](./cli.md) | CLI |
 | [observability.md](./observability.md) | ログ、メトリクス、health |

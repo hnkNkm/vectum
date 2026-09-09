@@ -5,6 +5,7 @@ import gleam/string
 import vectum/config
 import vectum/event
 import vectum/filter
+import vectum/storage
 
 const valid = "
 [server]
@@ -58,7 +59,14 @@ jitter = false
 "
 
 fn getenv(name: String) -> Result(String, Nil) {
-  dict.get(dict.from_list([#("AUDIT_SECRET", "dest-secret")]), name)
+  dict.get(
+    dict.from_list([
+      #("AUDIT_SECRET", "dest-secret"),
+      #("SOURCE_BEARER_TOKEN", "src-token"),
+      #("DEST_BEARER_TOKEN", "dst-token"),
+    ]),
+    name,
+  )
 }
 
 pub fn parse_valid_config_test() {
@@ -942,4 +950,317 @@ filters = [
     string.contains(w, "unknown config key in route r condition filters[1]")
     && string.contains(w, "bogus_leaf_key")
   })
+}
+
+// --- Bearer Token 認証 (#38): auth_bearer / auth_bearer_env ---
+
+/// source / destination どちらかに `body` の行を足した最小 TOML を作る。
+/// `body` は行末改行を含む既知キー行の塊。destination の場合は url の後に足す。
+fn bearer_toml(kind: String, body: String) -> String {
+  case kind {
+    "source" -> "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+" <> body <> "
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+"
+    _ -> "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+" <> body <> "
+"
+  }
+}
+
+pub fn source_bearer_inline_decodes_test() {
+  let toml = bearer_toml("source", "auth_bearer = \"tok-123\"\n")
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  let assert Ok(src) = config.find_source(parsed, "s")
+  assert src.bearer_token == Some("tok-123")
+  assert src.hmac_secret == None
+}
+
+pub fn source_bearer_env_decodes_test() {
+  let toml =
+    bearer_toml("source", "auth_bearer_env = \"SOURCE_BEARER_TOKEN\"\n")
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  let assert Ok(src) = config.find_source(parsed, "s")
+  assert src.bearer_token == Some("src-token")
+}
+
+pub fn source_bearer_and_hmac_coexist_test() {
+  // HMAC と Bearer は同じ Source に併設でき、両方保持される (#38 AND 前提)。
+  let toml =
+    bearer_toml(
+      "source",
+      "hmac_secret = \"hmac-1\"\nauth_bearer_env = \"SOURCE_BEARER_TOKEN\"\n",
+    )
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  let assert Ok(src) = config.find_source(parsed, "s")
+  assert src.hmac_secret == Some("hmac-1")
+  assert src.bearer_token == Some("src-token")
+}
+
+pub fn destination_bearer_decodes_test() {
+  let inline = bearer_toml("destination", "auth_bearer = \"tok-inline\"\n")
+  let assert Ok(parsed) = config.parse_with(inline, getenv)
+  let assert Ok(config.HttpDestination(bearer_token: Some("tok-inline"), ..)) =
+    config.find_destination(parsed, "ok")
+
+  let envd =
+    bearer_toml("destination", "auth_bearer_env = \"DEST_BEARER_TOKEN\"\n")
+  let assert Ok(parsed) = config.parse_with(envd, getenv)
+  let assert Ok(config.HttpDestination(bearer_token: Some("dst-token"), ..)) =
+    config.find_destination(parsed, "ok")
+}
+
+pub fn both_bearer_forms_are_rejected_test() {
+  // source / destination とも inline と env 参照の併設を拒否する。
+  assert list.all(["source", "destination"], fn(kind) {
+    let toml =
+      bearer_toml(
+        kind,
+        "auth_bearer = \"inline\"\nauth_bearer_env = \"DEST_BEARER_TOKEN\"\n",
+      )
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) {
+      string.contains(m, "both auth_bearer")
+      && string.contains(m, "auth_bearer_env")
+    })
+  })
+}
+
+pub fn empty_inline_bearer_is_rejected_test() {
+  assert list.all(["source", "destination"], fn(kind) {
+    let toml = bearer_toml(kind, "auth_bearer = \"\"\n")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) { string.contains(m, "empty auth_bearer") })
+  })
+}
+
+pub fn blank_inline_bearer_is_rejected_test() {
+  assert list.all(["source", "destination"], fn(kind) {
+    let toml = bearer_toml(kind, "auth_bearer = \"   \"\n")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) { string.contains(m, "empty auth_bearer") })
+  })
+}
+
+pub fn empty_bearer_env_value_is_rejected_test() {
+  assert list.all(["source", "destination"], fn(kind) {
+    let toml = bearer_toml(kind, "auth_bearer_env = \"EMPTY_BEARER\"\n")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, fn(_) { Ok("  ") })
+    list.any(messages, fn(m) {
+      string.contains(m, "empty environment variable")
+    })
+  })
+}
+
+pub fn missing_bearer_env_is_rejected_test() {
+  assert list.all(["source", "destination"], fn(kind) {
+    let toml = bearer_toml(kind, "auth_bearer_env = \"NO_SUCH_BEARER_TOKEN\"\n")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    // エラーは変数名を出すが、値は一切出さない。
+    list.any(messages, fn(m) {
+      string.contains(m, "NO_SUCH_BEARER_TOKEN")
+      && string.contains(m, "references missing environment variable")
+    })
+  })
+}
+
+pub fn bearer_keys_are_known_and_do_not_warn_test() {
+  // auth_bearer / auth_bearer_env は既知キー: 警告も出さず、値も保持する。
+  let toml =
+    "
+[[sources]]
+name = \"tok\"
+type_fixed = \"ping\"
+auth_bearer_env = \"SOURCE_BEARER_TOKEN\"
+
+[[destinations]]
+name = \"out\"
+url = \"http://127.0.0.1/x\"
+auth_bearer = \"dst-inline\"
+"
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert parsed.warnings == []
+  let assert Ok(src) = config.find_source(parsed, "tok")
+  assert src.bearer_token == Some("src-token")
+}
+
+// --- #30: [retention] ---
+
+/// source / destination が揃った最小 TOML の雛形。body に設定を足す。
+fn retention_toml(body: String) -> String {
+  "
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+[[destinations]]
+name = \"ok\"
+url = \"http://127.0.0.1/x\"
+" <> body
+}
+
+pub fn retention_parses_and_defaults_to_keep_forever_test() {
+  // セクション未設定なら全 0(無期限保持)
+  let assert Ok(parsed) = config.parse_with(valid, getenv)
+  assert parsed.retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+
+  // 明示設定はそのまま読まれる
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 7
+dead_letter_days = 90
+events_days = 30
+",
+    )
+  let assert Ok(parsed2) = config.parse_with(toml, getenv)
+  assert parsed2.retention
+    == storage.Retention(
+      succeeded_days: 7,
+      dead_letter_days: 90,
+      events_days: 30,
+    )
+  // 既知キーのみなので警告なし
+  assert parsed2.warnings == []
+}
+
+pub fn retention_zero_is_keep_forever_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 0
+dead_letter_days = 0
+events_days = 0
+",
+    )
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert parsed.retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+}
+
+pub fn negative_retention_days_are_rejected_test() {
+  let keys = ["succeeded_days", "dead_letter_days", "events_days"]
+  assert list.all(keys, fn(key) {
+    let toml = retention_toml("
+[retention]
+" <> key <> " = -1
+")
+    let assert Error(config.ConfigError(messages)) =
+      config.parse_with(toml, getenv)
+    list.any(messages, fn(m) {
+      string.contains(m, "retention." <> key) && string.contains(m, ">= 0")
+    })
+  })
+}
+
+pub fn non_integer_retention_days_are_rejected_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = \"seven\"
+",
+    )
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_with(toml, getenv)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "retention.succeeded_days")
+  })
+}
+
+pub fn unknown_retention_key_is_warned_not_rejected_test() {
+  let toml =
+    retention_toml(
+      "
+[retention]
+succeeded_days = 7
+bogus_retention_key = true
+",
+    )
+  let assert Ok(parsed) = config.parse_with(toml, getenv)
+  assert parsed.retention.succeeded_days == 7
+  assert list.any(parsed.warnings, fn(w) {
+    string.contains(w, "unknown config key in [retention]")
+    && string.contains(w, "bogus_retention_key")
+  })
+}
+
+/// `load_retention` は secret 検証エラーの設定でも `[storage] path` と
+/// `[retention]` を読める(prune 用)。
+pub fn load_retention_reads_storage_and_retention_without_secrets_test() {
+  let toml =
+    "
+[storage]
+path = \"/data/router.db\"
+[retention]
+succeeded_days = 3
+dead_letter_days = 5
+events_days = 7
+[[sources]]
+name = \"s\"
+type_fixed = \"ping\"
+hmac_secret_env = \"MISSING_SECRET\"
+"
+  // full load は secret 欠落で失敗する
+  let assert Error(_) = config.parse_with(toml, getenv)
+  let assert Ok(#(path, retention)) = config.parse_retention(toml)
+  assert path == "/data/router.db"
+  assert retention
+    == storage.Retention(succeeded_days: 3, dead_letter_days: 5, events_days: 7)
+}
+
+pub fn load_retention_defaults_when_section_absent_test() {
+  let toml =
+    "
+[storage]
+path = \"/data/router.db\"
+"
+  let assert Ok(#(path, retention)) = config.parse_retention(toml)
+  assert path == "/data/router.db"
+  assert retention
+    == storage.Retention(succeeded_days: 0, dead_letter_days: 0, events_days: 0)
+}
+
+pub fn load_retention_rejects_negative_and_invalid_toml_test() {
+  let negative =
+    "
+[retention]
+events_days = -3
+"
+  let assert Error(config.ConfigError(messages)) =
+    config.parse_retention(negative)
+  assert list.any(messages, fn(m) {
+    string.contains(m, "retention.events_days")
+  })
+
+  let assert Error(_) = config.parse_retention("not toml [")
+}
+
+pub fn load_retention_ignores_unknown_retention_keys_test() {
+  let toml =
+    "
+[retention]
+succeeded_days = 1
+future_option = true
+"
+  let assert Ok(#(_path, retention)) = config.parse_retention(toml)
+  assert retention.succeeded_days == 1
 }
