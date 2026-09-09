@@ -3,6 +3,7 @@
 ## v0.1（実装済みの範囲）
 
 - HTTP Ingress
+- Custom receive path via `sources.path`(#39)
 - HTTP Destination
 - Routing
 - Filtering
@@ -25,7 +26,6 @@
 - より詳しい CLI 参照
 - Event transformation
 - Configuration hot reload
-- `sources.path` によるカスタム受信パス(v0.1 は URL を `/events/<name>` 固定。設定キーは将来用に解析のみ維持)
 
 ## v0.3 候補
 

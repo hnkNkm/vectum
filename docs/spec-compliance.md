@@ -1,6 +1,6 @@
 # 仕様準拠状況（v0.1）
 
-結論: **v0.1 必須機能はほぼ満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。一方でカスタム Source path は部分実装。
+結論: **v0.1 必須機能は満たしている。** 製品として起動・受理・配送・retry・dead-letter・CLI は動く。カスタム Source path も実装済み(#39)。
 
 対象仕様は [docs/](./README.md) 配下の文書です。
 
@@ -12,7 +12,7 @@
 | HTTP Destination | 満たす | POST + Envelope |
 | JSON Event | 満たす | |
 | Common Event Envelope | 満たす | `id` / `source` / `type` / `time` / `data` / `metadata` |
-| Source Identification | 満たす | URL の `:source` |
+| Source Identification | 満たす | 既定は URL の `:source`。Source に `path` を指定すると任意のパスで受ける |
 | Event Type Identification | 満たす | header / JSON / 固定値 |
 | Declarative Routing | 満たす | TOML `[[routes]]` |
 | Field Filtering | 満たす | Data の dotted path と `metadata.` プレフィックスによる Metadata 条件 |
@@ -33,6 +33,7 @@
 ## 満たしている詳細
 
 - 未知 Source は 404。HMAC 失敗は 401。Payload 超過は 413。非 JSON は 415
+- Source に `path` を設定するとそのパスで受信(既定は `/events/<name>`)。他 Source のパス・未知パスは 404(#39)
 - フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path、AND のみ
 - `metadata.<key>` パスで HTTP ヘッダ由来の Metadata をフィルタできる
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
@@ -50,7 +51,6 @@
 
 | 項目 | 仕様 | 実装 |
 | --- | --- | --- |
-| Source `path` | 設定例にカスタム path | Ingress は `/events/:name` 固定。`path` キーは解析のみで照合には使わない(dead code は削除済み) |
 | メトリクス名 | 候補 `events_accepted_total`、`delivery_latency_seconds` ヒストグラム | `events_received_total` を採用。`delivery_latency_seconds` ヒストグラムは実装済み(#42)。ミリ秒の sum/count は後方互換で併存 |
 | CLI 名 | プレースホルダ `router` | 製品名 `vectum`（意図した差分） |
 | モジュール配置 | 層分けの例 | `src/vectum/*.gleam` に平坦化（仕様も過剰な層は避けるとしている） |

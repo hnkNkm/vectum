@@ -377,6 +377,8 @@ pub fn claim_token_strictly_increases_on_same_ms_requeue_test() {
   let assert Ok([claim_b]) = storage.claim_due(conn, 11_000, 1)
   assert claim_b.updated_at == 11_001
   assert claim_b.updated_at > claim_a.updated_at
+}
+
 /// --- #31: read-only ops CLI 用クエリ ---
 fn accept_at(
   conn: sqlight.Connection,
@@ -505,8 +507,7 @@ pub fn counts_by_status_and_oldest_open_test() {
 
   // e1 → succeeded / e2 → retry_scheduled / e3 → delivering / e4 → pending
   let assert Ok([c1]) = storage.claim_due(conn, 1000, 1)
-  let assert Ok(1) =
-    storage.mark_success(conn, c1.id, 1, 1500, c1.updated_at)
+  let assert Ok(1) = storage.mark_success(conn, c1.id, 1, 1500, c1.updated_at)
   let assert Ok([c2]) = storage.claim_due(conn, 2000, 1)
   let assert Ok(1) =
     storage.mark_retry(conn, c2.id, 1, 5000, "timeout", 2100, c2.updated_at)
@@ -538,7 +539,15 @@ pub fn read_queries_do_not_mutate_state_test() {
   accept_at(conn, "r-e2", "github", "push", "audit", 2000)
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
   let assert Ok(1) =
-    storage.mark_retry(conn, claimed.id, 2, 5000, "boom", 2500, claimed.updated_at)
+    storage.mark_retry(
+      conn,
+      claimed.id,
+      2,
+      5000,
+      "boom",
+      2500,
+      claimed.updated_at,
+    )
 
   // 一通り読む
   let assert Ok(_) = storage.status_snapshot(conn)
