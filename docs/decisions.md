@@ -8,7 +8,7 @@
 | Event ID | UUID v7 (`youid`) |
 | JSON 内部表現 | `EventValue`（Null / Bool / Int / Float / String / Array / Object） |
 | HTTP Server | [mist](https://hex.pm/packages/mist) |
-| HTTP Client | [gleam_httpc](https://hex.pm/packages/gleam_httpc) |
+| HTTP Client | inets `httpc` 直接呼び出し(`vectum_httpc_ffi.erl`)。`{autoretry, 0}` / 証明書検証を明示(F1) |
 | SQLite | [sqlight](https://hex.pm/packages/sqlight) |
 | TOML | [tom](https://hex.pm/packages/tom) |
 | HMAC | [gleam_crypto](https://hex.pm/packages/gleam_crypto) SHA-256。Source 既定は GitHub 互換 `sha256=<hex>` |

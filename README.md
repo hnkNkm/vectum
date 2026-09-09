@@ -15,12 +15,12 @@ Amazon EventBridge の完全互換実装ではありません。Kafka / RabbitMQ
 - HTTP Ingress (`POST /events/:source`)
 - HTTP Destination (POST)
 - JSON Event と共通 Envelope
-- 宣言的ルーティング / フィールドフィルタ / fan-out
-- Exponential backoff + jitter による retry
+- 宣言的ルーティング / フィールドフィルタ / fan-out（`[[routes.filters]]` の AND に加え、`[routes.condition]` で OR / ネスト条件を表現）
+- Exponential backoff + jitter による retry（有効な `Retry-After` はサーバ指定時刻で上書き）
 - Dead letter と CLI からの再配送
 - SQLite 永続化 (外部 DB 不要)
+- HMAC / Bearer Token 認証（Source の受信検証 / Destination への付与。併用時は AND）
 - 自動 retention / 手動 prune (`vectum prune`、#30)
-- HMAC 検証 / 署名
 - Prometheus 互換メトリクス
 - TOML 設定と CLI
 - オフライン / 閉域網で運用可能
