@@ -34,6 +34,7 @@ pub fn run_command(arguments: List(String)) -> Nil {
 pub fn validate(path: String) -> Nil {
   case config.load(path) {
     Ok(parsed) -> {
+      print_warnings(parsed)
       io.println(
         "ok: "
         <> path
@@ -55,6 +56,7 @@ pub fn validate(path: String) -> Nil {
 
 pub fn run_server(path: String) -> Nil {
   let parsed = require_config(path)
+  print_warnings(parsed)
   shutdown.init()
   // listen 前にハンドラを入れる。起動直後の SIGTERM も graceful に扱う
   shutdown.install_handler(shutdown.run_shutdown_sequence)
@@ -157,6 +159,12 @@ fn require_store(path: String) -> storage.Store {
 fn print_errors(path: String, messages: List(String)) -> Nil {
   io.println_error("invalid config: " <> path)
   list.each(messages, fn(message) { io.println_error("- " <> message) })
+}
+
+fn print_warnings(parsed: config.Config) -> Nil {
+  list.each(parsed.warnings, fn(warning) {
+    io.println_error("warning: " <> warning)
+  })
 }
 
 fn fail(message: String) -> a {

@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -21,6 +22,8 @@ pub type Config {
     routes: List(Route),
     delivery: Policy,
     concurrency: Int,
+    /// 未知キーなど失敗させない非致命的な検出内容。validate / run 時に stderr へ出す。
+    warnings: List(String),
   )
 }
 
@@ -181,9 +184,10 @@ fn decode_config(
           routes:,
           delivery: policy,
           concurrency:,
+          warnings: [],
         )
       case validate(config) {
-        [] -> Ok(config)
+        [] -> Ok(Config(..config, warnings: collect_warnings(doc)))
         messages -> Error(ConfigError(messages))
       }
     }
@@ -488,6 +492,7 @@ fn validate(config: Config) -> List(String) {
     ),
     list.flat_map(config.sources, validate_source),
     list.flat_map(config.destinations, validate_destination),
+    validate_source_paths(config.sources),
     list.flat_map(config.routes, fn(route) {
       validate_route(route, config.sources, config.destinations)
     }),
@@ -549,11 +554,86 @@ fn validate_source(source: Source) -> List(String) {
     ]
     _, _, _ -> []
   }
-  list.append(name_errors, type_errors)
+  let hmac_errors =
+    validate_hmac_header(source.hmac_header, "source " <> source.name)
+  list.append(name_errors, list.append(type_errors, hmac_errors))
+}
+
+/// `sources.path` の個別の構文規則。重複・予約パス衝突は全体照合で扱う。
+fn validate_source_path(source: Source) -> List(String) {
+  let subject = "source " <> source.name <> " path"
+  let empty = case source.path {
+    "" -> [subject <> " must not be empty"]
+    _ -> []
+  }
+  let starts = case string.starts_with(source.path, "/") {
+    True -> []
+    False -> [subject <> " must start with '/'"]
+  }
+  let root = case source.path == "/" {
+    True -> [subject <> " must not be '/'"]
+    False -> []
+  }
+  let forbidden =
+    string.contains(source.path, "?")
+    || string.contains(source.path, "#")
+    || has_whitespace(source.path)
+  let chars = case forbidden {
+    True -> [subject <> " must not contain '?', '#' or whitespace"]
+    False -> []
+  }
+  list.append(empty, list.append(starts, list.append(root, chars)))
+}
+
+/// 全 source の受信パス照合: 個別の構文規則・重複・予約パス衝突を拒否する。
+fn validate_source_paths(sources: List(Source)) -> List(String) {
+  let syntax = list.flat_map(sources, validate_source_path)
+  let reserved = ["/health", "/ready", "/metrics"]
+  let #(_seen, dups, collided) =
+    list.fold(sources, #(dict.new(), [], []), fn(acc, source) {
+      let #(seen, dups, collided) = acc
+      let dups = case dict.get(seen, source.path) {
+        Ok(_) -> [
+          "duplicate source path: "
+            <> source.path
+            <> " (defined by "
+            <> source.name
+            <> ")",
+          ..dups
+        ]
+        Error(_) -> dups
+      }
+      let collided = case list.contains(reserved, source.path) {
+        True -> [
+          "source path "
+            <> source.path
+            <> " collides with a reserved ingress endpoint",
+          ..collided
+        ]
+        False -> collided
+      }
+      #(dict.insert(seen, source.path, True), dups, collided)
+    })
+  let #(dups, collided) = #(list.reverse(dups), list.reverse(collided))
+  list.append(syntax, list.append(dups, collided))
+}
+
+fn validate_hmac_header(header: String, subject: String) -> List(String) {
+  case string.trim(header) {
+    "" -> [subject <> " hmac_header must not be empty"]
+    _ -> []
+  }
+}
+
+fn has_whitespace(text: String) -> Bool {
+  string.contains(text, " ")
+  || string.contains(text, "\t")
+  || string.contains(text, "\n")
+  || string.contains(text, "\r")
 }
 
 fn validate_destination(destination: Destination) -> List(String) {
-  let HttpDestination(name:, url:, timeout_ms:, ..) = destination
+  let HttpDestination(name:, url:, timeout_ms:, hmac_header:, ..) = destination
   let url_errors = case uri.parse(url) {
     Error(_) -> ["destination " <> name <> " has invalid URL"]
     Ok(parsed) ->
@@ -573,7 +653,8 @@ fn validate_destination(destination: Destination) -> List(String) {
     Some(ms) if ms >= 1 -> []
     Some(_) -> ["destination " <> name <> " timeout_ms must be >= 1"]
   }
-  list.append(url_errors, timeout_errors)
+  let hmac_errors = validate_hmac_header(hmac_header, "destination " <> name)
+  list.append(url_errors, list.append(timeout_errors, hmac_errors))
 }
 
 fn validate_route(
@@ -770,4 +851,153 @@ fn map_collect(
 
 fn key_label(key: List(String)) -> String {
   string.join(key, ".")
+}
+
+// ---------------------------------------------------------------------------
+// 未知キー警告 (Task B)
+// 未知キーは失敗させず、Config.warnings に載せて stderr へ出すだけ。
+// ---------------------------------------------------------------------------
+
+const server_keys = ["host", "port", "max_body_bytes"]
+
+const storage_keys = ["path"]
+
+const delivery_keys = [
+  "max_attempts",
+  "initial_backoff_ms",
+  "max_backoff_ms",
+  "timeout_ms",
+  "jitter",
+  "concurrency",
+]
+
+const source_keys = [
+  "name",
+  "path",
+  "type_from_header",
+  "type_from_json",
+  "type_fixed",
+  "hmac_header",
+  "hmac_secret",
+  "hmac_secret_env",
+]
+
+const destination_keys = [
+  "name",
+  "type",
+  "url",
+  "timeout_ms",
+  "hmac_header",
+  "hmac_secret",
+  "hmac_secret_env",
+]
+
+const route_keys = ["name", "source", "event", "destinations", "filters"]
+
+const filter_keys = ["path", "op", "value"]
+
+/// 失敗させない未知キー検出。構造が想定と異なれば decode 側が別途エラーにするため、
+/// ここでは未知キーの報告のみ行い、常に非破壊で返す。
+fn collect_warnings(doc: Dict(String, Toml)) -> List(String) {
+  list.flatten([
+    warn_table_keys(doc, "server", server_keys),
+    warn_table_keys(doc, "storage", storage_keys),
+    warn_table_keys(doc, "delivery", delivery_keys),
+    warn_row_keys(doc, "sources", source_keys, "source"),
+    warn_row_keys(doc, "destinations", destination_keys, "destination"),
+    warn_route_tables(doc),
+  ])
+}
+
+/// 単一 `[section]` テーブルの未知キー。
+fn warn_table_keys(
+  doc: Dict(String, Toml),
+  section: String,
+  allowed: List(String),
+) -> List(String) {
+  case dict.get(doc, section) {
+    Ok(tom.Table(inner)) | Ok(tom.InlineTable(inner)) ->
+      unknown_key_messages(dict.keys(inner), allowed, "[" <> section <> "]")
+    _ -> []
+  }
+}
+
+/// `[[section]]` の各テーブルの未知キー。
+fn warn_row_keys(
+  doc: Dict(String, Toml),
+  section: String,
+  allowed: List(String),
+  kind: String,
+) -> List(String) {
+  collect_row_tables(doc, section)
+  |> list.index_map(with: fn(row, index) {
+    let subject = case dict.get(row, "name") {
+      Ok(tom.String(name)) -> kind <> " " <> name
+      _ -> section <> "[" <> int.to_string(index + 1) <> "]"
+    }
+    unknown_key_messages(dict.keys(row), allowed, subject)
+  })
+  |> list.flatten
+}
+
+/// routes は row 本体に加え、各 row の `filters` テーブル群の未知キーも報告する。
+fn warn_route_tables(doc: Dict(String, Toml)) -> List(String) {
+  collect_row_tables(doc, "routes")
+  |> list.index_map(with: fn(row, index) {
+    let subject = case dict.get(row, "name") {
+      Ok(tom.String(name)) -> "route " <> name
+      _ -> "routes[" <> int.to_string(index + 1) <> "]"
+    }
+    let own = unknown_key_messages(dict.keys(row), route_keys, subject)
+    let filter_msgs =
+      case dict.get(row, "filters") {
+        Ok(tom.ArrayOfTables(tables)) -> tables
+        Ok(tom.Array(items)) ->
+          list.filter_map(items, fn(item) {
+            case item {
+              tom.Table(table) | tom.InlineTable(table) -> Ok(table)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> []
+      }
+      |> list.index_map(with: fn(filter_table, f_index) {
+        unknown_key_messages(
+          dict.keys(filter_table),
+          filter_keys,
+          subject <> " filters[" <> int.to_string(f_index + 1) <> "]",
+        )
+      })
+      |> list.flatten
+    list.append(own, filter_msgs)
+  })
+  |> list.flatten
+}
+
+/// `[[section]]` 相当のテーブル一覧を、構造が違えば空で返す (非破壊)。
+fn collect_row_tables(
+  doc: Dict(String, Toml),
+  section: String,
+) -> List(Dict(String, Toml)) {
+  case dict.get(doc, section) {
+    Ok(tom.ArrayOfTables(tables)) -> tables
+    Ok(tom.Array(items)) ->
+      list.filter_map(items, fn(item) {
+        case item {
+          tom.Table(table) | tom.InlineTable(table) -> Ok(table)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> []
+  }
+}
+
+fn unknown_key_messages(
+  keys: List(String),
+  allowed: List(String),
+  subject: String,
+) -> List(String) {
+  keys
+  |> list.filter(fn(key) { !list.contains(allowed, key) })
+  |> list.map(fn(key) { "unknown config key in " <> subject <> ": " <> key })
 }
