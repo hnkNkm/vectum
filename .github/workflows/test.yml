@@ -22,4 +22,26 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev
       - run: gleam deps download
       - run: gleam test
+      - run: gleam build
+      - name: Validate example configs
+        run: |
+          gleam run -- validate --config examples/minimal.toml
+          GITHUB_WEBHOOK_SECRET=ci AUDIT_HMAC_SECRET=ci \
+            gleam run -- validate --config examples/router.toml
+          gleam run -- validate --config examples/docker.toml
       - run: gleam format --check src test
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29"
+          gleam-version: "1.18.1"
+          rebar3-version: "3"
+      - name: Install SQLite headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev python3
+      - run: gleam deps download
+      - name: Run E2E smoke
+        run: scripts/e2e_smoke.sh

@@ -1,5 +1,9 @@
 //// HTTP-level ingress tests (#45): raw TCP through a real mist server.
 //// Proves chunked bodies cannot bypass `max_body_bytes`.
+////
+//// 固定ポートではなく port 0 (OS 割り当て) に bind し、実ポートを
+//// mist の after_start 経由で受け取る。複数テストランの並行実行で
+//// ポートが衝突しない。
 
 import gleam/bit_array
 import gleam/erlang/process
@@ -42,18 +46,24 @@ destinations = [\"audit\"]
 jitter = false
 "
 
-fn started_server(port: Int) -> Int {
+/// mist を port 0 で起動し、実際に割り当てられたポートを返す。
+/// after_start は listen 完了後に呼ばれるため、readiness の確認を兼ねる。
+fn started_server() -> Int {
   let assert Ok(parsed) = config.parse_with(toml, fn(_) { Error(Nil) })
   let assert Ok(store) = storage.start(":memory:")
   let assert Ok(m) = metrics.start()
+  let port_subject = process.new_subject()
   let assert Ok(_) =
     ingress.service(parsed, store, m)
     |> mist.new
+    |> mist.after_start(fn(port, _scheme, _address) {
+      process.send(port_subject, port)
+    })
     |> mist.bind("127.0.0.1")
-    |> mist.port(port)
+    |> mist.port(0)
     |> mist.start
-  // listen の完了を待つ
-  process.sleep(200)
+  // after_start が実ポートを送ってくる(上限付きで待つ)
+  let assert Ok(port) = process.receive(port_subject, 5000)
   port
 }
 
@@ -98,7 +108,7 @@ fn content_length_packet(body: String) -> BitArray {
 }
 
 pub fn chunked_body_over_limit_is_rejected_test() {
-  let port = started_server(18_771)
+  let port = started_server()
   // 64 bytes of chunked body against max_body_bytes = 32
   let body = string.join(list.repeat("x", 64), "")
   let response = send_raw(port, chunked_packet(body))
@@ -106,14 +116,14 @@ pub fn chunked_body_over_limit_is_rejected_test() {
 }
 
 pub fn content_length_over_limit_is_rejected_test() {
-  let port = started_server(18_772)
+  let port = started_server()
   let body = string.join(list.repeat("x", 64), "")
   let response = send_raw(port, content_length_packet(body))
   assert string.starts_with(status_line(response), "HTTP/1.1 413")
 }
 
 pub fn small_body_is_accepted_test() {
-  let port = started_server(18_773)
+  let port = started_server()
   let body = "{\"type\":\"ping\"}"
   let response = send_raw(port, content_length_packet(body))
   assert string.starts_with(status_line(response), "HTTP/1.1 202")
