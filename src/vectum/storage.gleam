@@ -56,6 +56,7 @@ pub type Message {
     id: String,
     attempts: Int,
     now_ms: Int,
+    token: Int,
   )
   MarkRetry(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -64,6 +65,7 @@ pub type Message {
     next_attempt_at: Int,
     error: String,
     now_ms: Int,
+    token: Int,
   )
   MarkDead(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -71,6 +73,7 @@ pub type Message {
     attempts: Int,
     error: String,
     now_ms: Int,
+    token: Int,
   )
   ReapStale(
     reply: Subject(Result(Int, sqlight.Error)),
@@ -88,7 +91,9 @@ const schema = "
 pragma foreign_keys = on;
 pragma busy_timeout = 5000;
 pragma journal_mode = wal;
-pragma synchronous = normal;
+-- WAL でも synchronous = full で各コミットを fsync する。
+-- 202 応答はコミット完了後なので、電源断でも受理済み配送は失われない。
+pragma synchronous = full;
 
 create table if not exists events (
   id text primary key,
@@ -290,8 +295,12 @@ pub fn claim_due(
   now_ms: Int,
   limit: Int,
 ) -> Result(List(Delivery), sqlight.Error) {
+  // updated_at が claim 世代 token を兼ねる。reap と claim が同じミリ秒に
+  // 重なっても前値と衝突しないよう、必ず直前の値より大きくする。
+  // RETURNING で返る updated_at がそのまま mark_* の token になる。
   sqlight.query(
-    "update deliveries set status = 'delivering', updated_at = ?
+    "update deliveries
+     set status = 'delivering', updated_at = max(?, updated_at + 1)
      where id in (
        select id from deliveries
        where status in ('pending', 'retry_scheduled')
@@ -308,6 +317,7 @@ pub fn claim_due(
 }
 
 /// delivering の行にだけ効く。戻り値は更新件数。
+/// token は claim 時に返った updated_at(claim 世代)。
 /// reaper に奪取された後の旧ワーカーの遅延完了は 0 件になり、
 /// 呼出側は確定しなかったことを検知できる。
 pub fn mark_success(
@@ -315,10 +325,15 @@ pub fn mark_success(
   id: String,
   attempts: Int,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
-  update_delivery(conn, id, "succeeded", attempts, now_ms, now_ms, None)
+  update_delivery(conn, id, "succeeded", attempts, now_ms, now_ms, None, token)
 }
 
+/// delivering の行にだけ効き、かつ token(claim 時の updated_at)が現在値と
+/// 一致する行にだけ効く。戻り値は更新件数。
+/// reaper に奪取されて新世代が claim した後の旧ワーカーの遅延完了は
+/// 0 件になり、呼出側は確定しなかったことを検知できる。
 pub fn mark_retry(
   conn: sqlight.Connection,
   id: String,
@@ -326,12 +341,13 @@ pub fn mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'retry_scheduled', attempts = ?, next_attempt_at = ?,
          last_attempt_at = ?, last_error = ?, updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -340,6 +356,7 @@ pub fn mark_retry(
       sqlight.text(error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -352,12 +369,13 @@ pub fn mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = 'dead_letter', attempts = ?, last_attempt_at = ?,
          last_error = ?, updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.int(attempts),
@@ -365,6 +383,7 @@ pub fn mark_dead(
       sqlight.text(error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -379,14 +398,16 @@ fn update_delivery(
   last_attempt_at: Int,
   now_ms: Int,
   error: Option(String),
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
-  // mark_* は delivering の間だけ有効。reaper 後の旧ワーカーの遅延完了が、
-  // 新しい claim の結果を上書きしないようにする。
+  // mark_* は delivering の間だけ有効。さらに claim 世代 token(claim 時に
+  // 返った updated_at)が現在値と一致する行にだけ効く。reaper 後に新世代が
+  // claim した行を、旧ワーカーの遅延完了が上書きできない(F2)。
   use _ <- result.try(sqlight.query(
     "update deliveries
      set status = ?, attempts = ?, last_attempt_at = ?, last_error = ?,
          updated_at = ?
-     where id = ? and status = 'delivering'",
+     where id = ? and status = 'delivering' and updated_at = ?",
     on: conn,
     with: [
       sqlight.text(status),
@@ -395,6 +416,7 @@ fn update_delivery(
       sqlight.nullable(sqlight.text, error),
       sqlight.int(now_ms),
       sqlight.text(id),
+      sqlight.int(token),
     ],
     expecting: decode.success(Nil),
   ))
@@ -403,6 +425,8 @@ fn update_delivery(
 
 /// updated_at が cutoff_ms より前の delivering を pending に戻し、
 /// 戻した件数を返す。
+/// 戻した行の updated_at は now_ms に置き換わるため、旧 claim の token は
+/// 失効し、旧ワーカーの mark_* は以後 0 件になる(F2)。
 pub fn reap_stale_delivering(
   conn: sqlight.Connection,
   cutoff_ms: Int,
@@ -625,9 +649,10 @@ pub fn call_mark_success(
   id: String,
   attempts: Int,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkSuccess(reply:, id:, attempts:, now_ms:)
+    MarkSuccess(reply:, id:, attempts:, now_ms:, token:)
   })
 }
 
@@ -638,9 +663,10 @@ pub fn call_mark_retry(
   next_attempt_at: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:)
+    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:, token:)
   })
 }
 
@@ -650,9 +676,10 @@ pub fn call_mark_dead(
   attempts: Int,
   error: String,
   now_ms: Int,
+  token: Int,
 ) -> Result(Int, sqlight.Error) {
   try_call(store.subject, 5000, fn(reply) {
-    MarkDead(reply:, id:, attempts:, error:, now_ms:)
+    MarkDead(reply:, id:, attempts:, error:, now_ms:, token:)
   })
 }
 
@@ -706,15 +733,15 @@ fn handle(
     GetEvent(reply:, id:) -> process.send(reply, get_event(conn, id))
     ClaimDue(reply:, now_ms:, limit:) ->
       process.send(reply, claim_due(conn, now_ms, limit))
-    MarkSuccess(reply:, id:, attempts:, now_ms:) ->
-      process.send(reply, mark_success(conn, id, attempts, now_ms))
-    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:) ->
+    MarkSuccess(reply:, id:, attempts:, now_ms:, token:) ->
+      process.send(reply, mark_success(conn, id, attempts, now_ms, token))
+    MarkRetry(reply:, id:, attempts:, next_attempt_at:, error:, now_ms:, token:) ->
       process.send(
         reply,
-        mark_retry(conn, id, attempts, next_attempt_at, error, now_ms),
+        mark_retry(conn, id, attempts, next_attempt_at, error, now_ms, token),
       )
-    MarkDead(reply:, id:, attempts:, error:, now_ms:) ->
-      process.send(reply, mark_dead(conn, id, attempts, error, now_ms))
+    MarkDead(reply:, id:, attempts:, error:, now_ms:, token:) ->
+      process.send(reply, mark_dead(conn, id, attempts, error, now_ms, token))
     ReapStale(reply:, cutoff_ms:, now_ms:) ->
       process.send(reply, reap_stale_delivering(conn, cutoff_ms, now_ms))
     ListDead(reply:) -> process.send(reply, list_dead(conn))

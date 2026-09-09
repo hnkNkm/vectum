@@ -143,11 +143,14 @@ pub fn tick(
           |> result.map_error(string.inspect)
           |> result.map(fn(due) {
             list.each(due, fn(item) {
-              // claim と同時に枠を予約する。次の tick が読む前に確定させる
-              shutdown.worker_started()
               // spawn_unlinked: Dispatcher が死んでもワーカーは殺さない。
-              // 枠解放は run_guarded が panic 時も保証する。
+              // 枠予約(worker_started)は spawn 後にワーカー自身の先頭で
+              // 行う。tick 内で予約してから spawn する方式だと、その間に
+              // Dispatcher が死んだ場合に予約が永久に漏れる(F5)。
+              // spawn 失敗時は予約自体が未発生なので漏れない。
+              // 次の tick は 200ms 後なので、予約は必ず先に確定している。
               process.spawn_unlinked(fn() {
+                shutdown.worker_started()
                 let completed =
                   run_guarded(
                     fn() {
@@ -299,11 +302,19 @@ fn persist_update(
   latency: Int,
 ) -> Result(Nil, String) {
   // mark 系は delivering の行にだけ効き、更新件数を返す。
-  // 0 件 = reaper に奪取済みのため metrics/ログを出さず再送サイクルに委ねる。
+  // token には item.updated_at(claim 時に claim_due が返した値)を渡す。
+  // 0 件 = 自分の claim 世代が失効している(reaper に奪取済み)ため
+  // metrics/ログを出さず再送サイクルに委ねる。
   case update {
     delivery.Succeeded(attempts) -> {
       case
-        storage.call_mark_success(store, item.id, attempts, now)
+        storage.call_mark_success(
+          store,
+          item.id,
+          attempts,
+          now,
+          item.updated_at,
+        )
         |> result.map_error(string.inspect)
       {
         Ok(0) -> {
@@ -328,7 +339,15 @@ fn persist_update(
     }
     delivery.RetryScheduled(attempts, next, error) -> {
       case
-        storage.call_mark_retry(store, item.id, attempts, next, error, now)
+        storage.call_mark_retry(
+          store,
+          item.id,
+          attempts,
+          next,
+          error,
+          now,
+          item.updated_at,
+        )
         |> result.map_error(string.inspect)
       {
         Ok(0) -> {
@@ -354,7 +373,14 @@ fn persist_update(
     }
     delivery.DeadLettered(attempts, error) -> {
       case
-        storage.call_mark_dead(store, item.id, attempts, error, now)
+        storage.call_mark_dead(
+          store,
+          item.id,
+          attempts,
+          error,
+          now,
+          item.updated_at,
+        )
         |> result.map_error(string.inspect)
       {
         Ok(0) -> {

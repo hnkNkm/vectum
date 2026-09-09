@@ -56,10 +56,19 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
   assert claimed.id == delivery.id
   let assert Ok(1) =
-    storage.mark_retry(conn, claimed.id, 1, 5000, "timeout", 1100)
+    storage.mark_retry(
+      conn,
+      claimed.id,
+      1,
+      5000,
+      "timeout",
+      1100,
+      claimed.updated_at,
+    )
   let assert Ok([]) = storage.claim_due(conn, 2000, 10)
   let assert Ok([again]) = storage.claim_due(conn, 5000, 10)
-  let assert Ok(1) = storage.mark_dead(conn, again.id, 8, "boom", 6000)
+  let assert Ok(1) =
+    storage.mark_dead(conn, again.id, 8, "boom", 6000, again.updated_at)
   let assert Ok([dead]) = storage.list_dead(conn)
   assert dead.status == storage.DeadLetter
   assert dead.last_error == Some("boom")
@@ -71,7 +80,8 @@ pub fn retry_then_dead_letter_and_cli_ops_test() {
   assert pending.status == storage.Delivering
   assert pending.attempts == 0
 
-  let assert Ok(1) = storage.mark_dead(conn, pending.id, 8, "boom", 8000)
+  let assert Ok(1) =
+    storage.mark_dead(conn, pending.id, 8, "boom", 8000, pending.updated_at)
   let assert Ok(1) = storage.delete_dead(conn, pending.id)
   let assert Ok([]) = storage.list_dead(conn)
 }
@@ -92,7 +102,8 @@ pub fn success_clears_pending_test() {
   let ev = sample_event("evt-5")
   let assert Ok(_) = storage.accept(conn, ev, ["ci"], 1000, ["s1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
-  let assert Ok(1) = storage.mark_success(conn, claimed.id, 1, 1500)
+  let assert Ok(1) =
+    storage.mark_success(conn, claimed.id, 1, 1500, claimed.updated_at)
   let assert Ok(0) = storage.count_pending(conn)
   let assert Ok([]) = storage.list_dead(conn)
 }
@@ -102,13 +113,13 @@ pub fn reap_stale_delivering_moves_only_old_rows_test() {
   let ev = sample_event("evt-reap")
   let assert Ok([d1, _d2]) =
     storage.accept(conn, ev, ["ci", "audit"], 1000, ["rp-1", "rp-2"])
-  // d1 を updated_at=1000 で delivering に
+  // d1 を claim(accept と同 ms のため token=1001 で delivering に)
   let assert Ok([c1]) = storage.claim_due(conn, 1000, 1)
   assert c1.id == d1.id
-  // d2 を updated_at=2000 で delivering に
+  // d2 を token=2000 で delivering に
   let assert Ok([_c2]) = storage.claim_due(conn, 2000, 10)
 
-  // cutoff=1500: 古い方(updated_at=1000)だけを pending に戻す
+  // cutoff=1500: 古い方(d1, token=1001)だけを pending に戻す
   let assert Ok(1) = storage.reap_stale_delivering(conn, 1500, 3000)
   let assert Ok([requeued]) = storage.claim_due(conn, 3000, 10)
   assert requeued.id == d1.id
@@ -160,11 +171,22 @@ pub fn mark_retry_does_not_touch_succeeded_row_test() {
   let assert Ok([d]) = storage.accept(conn, ev, ["ci"], 1000, ["g-1"])
   let assert Ok([claimed]) = storage.claim_due(conn, 1000, 1)
   let _ = d
-  let assert Ok(1) = storage.mark_success(conn, claimed.id, 1, 1100)
+  let assert Ok(1) =
+    storage.mark_success(conn, claimed.id, 1, 1100, claimed.updated_at)
 
   // succeeded 行への mark_retry / mark_dead は 0 件で無視される
-  let assert Ok(0) = storage.mark_retry(conn, claimed.id, 2, 5000, "late", 1200)
-  let assert Ok(0) = storage.mark_dead(conn, claimed.id, 2, "late", 1300)
+  let assert Ok(0) =
+    storage.mark_retry(
+      conn,
+      claimed.id,
+      2,
+      5000,
+      "late",
+      1200,
+      claimed.updated_at,
+    )
+  let assert Ok(0) =
+    storage.mark_dead(conn, claimed.id, 2, "late", 1300, claimed.updated_at)
 
   // retry_scheduled / dead_letter になっていない(claim も dead 一覧も空)
   let assert Ok([]) = storage.claim_due(conn, 999_999, 10)
@@ -291,4 +313,68 @@ pub fn crash_recovery_reopens_closed_tmp_file_test() {
 
   let assert Ok(_) = sqlight.close(reopened)
   remove_db(path)
+}
+
+/// F2: mark_* の claim 世代フェンス。
+/// A claim(token t0) → reap → B claim(token t1 > t0) の後、
+/// A の遅延 mark は 0 件で拒否され、行は B の mark だけが確定する。
+/// (フェンスなしでは A の mark が B の結果を上書きしてしまう)
+pub fn stale_claim_mark_cannot_overwrite_new_claim_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-f2-fence")
+  let assert Ok(_) = storage.accept(conn, ev, ["ci"], 1000, ["f2-1"])
+
+  // 世代 1: A が claim し、claim token(updated_at)を得る
+  let assert Ok([claim_a]) = storage.claim_due(conn, 1100, 1)
+  let token_a = claim_a.updated_at
+
+  // A が滞留 → reaper が pending に戻す(updated_at は reap 時刻へ進む)
+  let assert Ok(1) = storage.reap_stale_delivering(conn, 1150, 1200)
+
+  // 世代 2: B が同じ行を claim。token は世代 1 より確実に大きい
+  let assert Ok([claim_b]) = storage.claim_due(conn, 1300, 1)
+  assert claim_b.id == claim_a.id
+  let token_b = claim_b.updated_at
+  assert token_b > token_a
+
+  // A の遅延 mark_retry は古い token のため 0 件(B の行は無傷)
+  let assert Ok(0) =
+    storage.mark_retry(
+      conn,
+      claim_a.id,
+      1,
+      999_999,
+      "stale worker",
+      1400,
+      token_a,
+    )
+
+  // B の mark_success は新しい token で 1 件確定する
+  let assert Ok(1) = storage.mark_success(conn, claim_b.id, 1, 1500, token_b)
+
+  // 最終状態: succeeded。再 claim も dead 一覧も空
+  let assert Ok(0) = storage.count_pending(conn)
+  let assert Ok([]) = storage.claim_due(conn, 999_999, 10)
+  let assert Ok([]) = storage.list_dead(conn)
+}
+
+/// F2: claim の token(updated_at)は直前の値より必ず大きくなる。
+/// reap と claim が同じミリ秒に重なっても世代 token が衝突しない
+/// (`max(?, updated_at + 1)` による繰り上げ)。
+pub fn claim_token_strictly_increases_on_same_ms_requeue_test() {
+  use conn <- with_db
+  let ev = sample_event("evt-f2-bump")
+  let assert Ok(_) = storage.accept(conn, ev, ["ci"], 900, ["f2-2"])
+
+  // 世代 1: A が claim(token = 1000)
+  let assert Ok([claim_a]) = storage.claim_due(conn, 1000, 1)
+  assert claim_a.updated_at == 1000
+
+  // A 滞留 → reaper が 11000ms に requeue(updated_at = 11000)
+  let assert Ok(1) = storage.reap_stale_delivering(conn, 10_500, 11_000)
+
+  // 世代 2: 同じ 11000ms に B が claim しても token は 11001 へ繰り上がる
+  let assert Ok([claim_b]) = storage.claim_due(conn, 11_000, 1)
+  assert claim_b.updated_at == 11_001
+  assert claim_b.updated_at > claim_a.updated_at
 }
