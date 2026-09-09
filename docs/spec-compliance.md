@@ -34,7 +34,7 @@
 
 - 未知 Source は 404。HMAC 失敗は 401。Payload 超過は 413。非 JSON は 415
 - Source に `path` を設定するとそのパスで受信(既定は `/events/<name>`)。他 Source のパス・未知パスは 404(#39)
-- フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path、AND のみ
+- フィルタ演算子 `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `contains` / `exists` / `not_exists`、dotted path。`[[routes.filters]]` は AND 結合。OR / ネスト条件は排他の `[routes.condition]`(op = `all` / `any`、最大 4 段、短絡評価)で表現(#36)
 - `metadata.<key>` パスで HTTP ヘッダ由来の Metadata をフィルタできる
 - 2xx 成功、408 / 429 / 5xx / timeout / 接続失敗は retry、その他 4xx / 3xx は dead letter
 - retry 対象の応答では `Retry-After`(delta-seconds / HTTP-date)を尊重する。有効なら backoff・jitter なしでサーバ指定時刻に次回試行、上限 24h 超過はクランプして `last_error` に記録。不正・欠落は backoff へ、過去の HTTP-date は即時(#37)
